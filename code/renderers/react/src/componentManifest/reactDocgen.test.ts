@@ -55,10 +55,9 @@ describe('parseWithReactDocgen exportName coverage', () => {
     expect(await parse(code)).toMatchInlineSnapshot(`
       [
         {
-          "actualName": "Foo",
+          "actualName": "",
           "definedInFile": "/virtual/Component.tsx",
           "description": "",
-          "displayName": "Foo",
           "exportName": "default",
           "methods": [],
         },
@@ -96,7 +95,7 @@ describe('parseWithReactDocgen exportName coverage', () => {
           "definedInFile": "/virtual/Component.tsx",
           "description": "",
           "displayName": "Foo",
-          "exportName": "default",
+          "exportName": "Foo",
           "methods": [],
         },
       ]
@@ -114,7 +113,7 @@ describe('parseWithReactDocgen exportName coverage', () => {
           "definedInFile": "/virtual/Component.tsx",
           "description": "",
           "displayName": "Foo",
-          "exportName": "default",
+          "exportName": "Foo",
           "methods": [],
         },
       ]
@@ -133,7 +132,7 @@ describe('parseWithReactDocgen exportName coverage', () => {
           "definedInFile": "/virtual/Component.tsx",
           "description": "",
           "displayName": "Foo",
-          "exportName": "default",
+          "exportName": "Foo",
           "methods": [],
         },
       ]
@@ -152,7 +151,7 @@ describe('parseWithReactDocgen exportName coverage', () => {
           "definedInFile": "/virtual/Component.tsx",
           "description": "",
           "displayName": "Foo",
-          "exportName": "default",
+          "exportName": "Bar",
           "methods": [],
         },
       ]
@@ -189,10 +188,18 @@ describe('parseWithReactDocgen exportName coverage', () => {
     expect(await parse(code)).toMatchInlineSnapshot(`
       [
         {
-          "actualName": "Foo",
+          "actualName": "B",
           "definedInFile": "/virtual/Component.tsx",
           "description": "",
-          "displayName": "Foo",
+          "displayName": "B",
+          "exportName": "Beta",
+          "methods": [],
+        },
+        {
+          "actualName": "C",
+          "definedInFile": "/virtual/Component.tsx",
+          "description": "",
+          "displayName": "C",
           "exportName": "default",
           "methods": [],
         },
