@@ -12,8 +12,8 @@ import { PropExtractionProject } from './PropExtractionProject';
 // ---------------------------------------------------------------------------
 
 /**
- * Use ts.sys for all file I/O. The react vitest setup mocks node:fs with memfs,
- * but ts.sys uses the real filesystem (it imported fs before mocks were applied).
+ * Use ts.sys for all file I/O. The react vitest setup mocks node:fs with memfs, but ts.sys uses the
+ * real filesystem (it imported fs before mocks were applied).
  */
 const sys = ts.sys;
 
@@ -21,8 +21,8 @@ const sys = ts.sys;
 const MONOREPO_ROOT = path.resolve(__dirname, '../../../../..');
 
 /**
- * Creates a temp project directory UNDER the monorepo root so that
- * node_modules resolution naturally walks up and finds @types/react.
+ * Creates a temp project directory UNDER the monorepo root so that node_modules resolution
+ * naturally walks up and finds @types/react.
  */
 function createTempProject(files: Record<string, string>): {
   projectDir: string;
@@ -31,7 +31,9 @@ function createTempProject(files: Record<string, string>): {
 } {
   // Place under monorepo root so node_modules resolution works
   const fixturesDir = path.join(MONOREPO_ROOT, '.test-fixtures');
-  if (!sys.directoryExists(fixturesDir)) sys.createDirectory(fixturesDir);
+  if (!sys.directoryExists(fixturesDir)) {
+    sys.createDirectory(fixturesDir);
+  }
   const projectDir = path.join(
     fixturesDir,
     `prop-ls-test-${Date.now()}-${Math.random().toString(36).slice(2)}`
@@ -63,7 +65,9 @@ function createTempProject(files: Record<string, string>): {
       let current = projectDir;
       for (const part of parts) {
         current = path.join(current, part);
-        if (!sys.directoryExists(current)) sys.createDirectory(current);
+        if (!sys.directoryExists(current)) {
+          sys.createDirectory(current);
+        }
       }
     }
     sys.writeFile(filePath, content);
@@ -74,7 +78,9 @@ function createTempProject(files: Record<string, string>): {
 }
 
 function cleanup(dir: string) {
-  if (!sys.directoryExists(dir)) return;
+  if (!sys.directoryExists(dir)) {
+    return;
+  }
   for (const entry of sys.readDirectory(dir, undefined, undefined, ['**/*'])) {
     sys.deleteFile!(entry);
   }

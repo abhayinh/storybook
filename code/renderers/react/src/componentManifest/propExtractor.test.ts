@@ -35,9 +35,13 @@ seedHost.getSourceFile = (fileName, langVer) => {
     return ts.createSourceFile(seedFile, 'import React from "react";', ts.ScriptTarget.ES2020);
   }
   const cached = sourceFileCache.get(fileName);
-  if (cached) return cached;
+  if (cached) {
+    return cached;
+  }
   const sf = origGetSourceFile(fileName, langVer);
-  if (sf) sourceFileCache.set(fileName, sf);
+  if (sf) {
+    sourceFileCache.set(fileName, sf);
+  }
   return sf;
 };
 ts.createProgram([seedFile], SHARED_OPTIONS, seedHost);
@@ -47,12 +51,12 @@ ts.createProgram([seedFile], SHARED_OPTIONS, seedHost);
 // ---------------------------------------------------------------------------
 
 /**
- * Creates a ts.Program from a map of virtual file paths to source code.
- * Virtual files are placed under the monorepo root so module resolution
- * for 'react' and other packages works via the real node_modules.
+ * Creates a ts.Program from a map of virtual file paths to source code. Virtual files are placed
+ * under the monorepo root so module resolution for 'react' and other packages works via the real
+ * node_modules.
  *
- * Uses a shared source file cache so @types/react is parsed only once
- * across the entire test suite (~90s → ~10s).
+ * Uses a shared source file cache so @types/react is parsed only once across the entire test suite
+ * (~90s → ~10s).
  */
 function createVirtualProgram(
   files: Record<string, string>,
@@ -75,22 +79,34 @@ function createVirtualProgram(
     }
     // Return cached source file if available (lib.d.ts, @types/react, etc.)
     const cached = sourceFileCache.get(fileName);
-    if (cached) return cached;
+    if (cached) {
+      return cached;
+    }
     const sf = originalGetSourceFile(fileName, languageVersionOrOptions);
-    if (sf) sourceFileCache.set(fileName, sf);
+    if (sf) {
+      sourceFileCache.set(fileName, sf);
+    }
     return sf;
   };
 
   host.fileExists = (fileName) => {
-    if (files[fileName] !== undefined) return true;
-    if (sourceFileCache.has(fileName)) return true;
+    if (files[fileName] !== undefined) {
+      return true;
+    }
+    if (sourceFileCache.has(fileName)) {
+      return true;
+    }
     return originalFileExists(fileName);
   };
 
   host.readFile = (fileName) => {
-    if (files[fileName] !== undefined) return files[fileName];
+    if (files[fileName] !== undefined) {
+      return files[fileName];
+    }
     const cached = sourceFileCache.get(fileName);
-    if (cached) return cached.text;
+    if (cached) {
+      return cached.text;
+    }
     return originalReadFile(fileName);
   };
 
@@ -98,7 +114,9 @@ function createVirtualProgram(
   host.directoryExists = (dir) => {
     const dirWithSlash = dir.endsWith('/') ? dir : dir + '/';
     for (const key of Object.keys(files)) {
-      if (key.startsWith(dirWithSlash)) return true;
+      if (key.startsWith(dirWithSlash)) {
+        return true;
+      }
     }
     return originalDirectoryExists ? originalDirectoryExists(dir) : true;
   };
@@ -122,8 +140,8 @@ function extractSingle(
 }
 
 /**
- * Runs detectComponents on a single virtual file and returns the export names
- * that were identified as components.
+ * Runs detectComponents on a single virtual file and returns the export names that were identified
+ * as components.
  */
 function detect(
   code: string,
@@ -138,9 +156,10 @@ function detect(
   const candidates = exports
     .filter((exp) => {
       const name = exp.getName();
-      if (name !== 'default' && !/^[A-Z]/.test(name)) return false;
-      const resolved =
-        exp.flags & ts.SymbolFlags.Alias ? checker.getAliasedSymbol(exp) : exp;
+      if (name !== 'default' && !/^[A-Z]/.test(name)) {
+        return false;
+      }
+      const resolved = exp.flags & ts.SymbolFlags.Alias ? checker.getAliasedSymbol(exp) : exp;
       return !!resolved.valueDeclaration;
     })
     .map((exp) => ({
@@ -148,10 +167,14 @@ function detect(
       isDefault: exp.getName() === 'default',
     }));
 
-  if (candidates.length === 0) return [];
+  if (candidates.length === 0) {
+    return [];
+  }
 
   const result = detectComponents(ts, fileName, candidates, program);
-  if (!result) return [];
+  if (!result) {
+    return [];
+  }
 
   return [...result.propsTypes.keys()].sort();
 }
@@ -163,80 +186,98 @@ function detect(
 describe('detectComponents', () => {
   describe('function components', () => {
     it('detects arrow function component', () => {
-      expect(detect(`
+      expect(
+        detect(`
         import React from 'react';
         interface Props { label: string }
         export const Button = (props: Props) => <button />;
-      `)).toEqual(['Button']);
+      `)
+      ).toEqual(['Button']);
     });
 
     it('detects function declaration component', () => {
-      expect(detect(`
+      expect(
+        detect(`
         import React from 'react';
         export function Button(props: { label: string }) { return <button /> }
-      `)).toEqual(['Button']);
+      `)
+      ).toEqual(['Button']);
     });
 
     it('detects component returning null', () => {
-      expect(detect(`
+      expect(
+        detect(`
         import React from 'react';
         export const Empty = (props: { show: boolean }) => props.show ? <div /> : null;
-      `)).toEqual(['Empty']);
+      `)
+      ).toEqual(['Empty']);
     });
 
     it('detects component with no props', () => {
-      expect(detect(`
+      expect(
+        detect(`
         import React from 'react';
         export const Logo = () => <svg />;
-      `)).toEqual(['Logo']);
+      `)
+      ).toEqual(['Logo']);
     });
   });
 
   describe('class components', () => {
     it('detects class extending React.Component', () => {
-      expect(detect(`
+      expect(
+        detect(`
         import React from 'react';
         export class Button extends React.Component<{ label: string }> {
           render() { return <button /> }
         }
-      `)).toEqual(['Button']);
+      `)
+      ).toEqual(['Button']);
     });
 
     it('detects class extending React.PureComponent', () => {
-      expect(detect(`
+      expect(
+        detect(`
         import React from 'react';
         export class Button extends React.PureComponent<{ label: string }> {
           render() { return <button /> }
         }
-      `)).toEqual(['Button']);
+      `)
+      ).toEqual(['Button']);
     });
   });
 
   describe('wrapped components', () => {
     it('detects React.memo', () => {
-      expect(detect(`
+      expect(
+        detect(`
         import React from 'react';
         const Inner = (props: { label: string }) => <button />;
         export const Button = React.memo(Inner);
-      `)).toEqual(['Button']);
+      `)
+      ).toEqual(['Button']);
     });
 
     it('detects React.forwardRef', () => {
-      expect(detect(`
+      expect(
+        detect(`
         import React from 'react';
         export const Button = React.forwardRef<HTMLButtonElement, { label: string }>((props, ref) => (
           <button ref={ref} />
         ));
-      `)).toEqual(['Button']);
+      `)
+      ).toEqual(['Button']);
     });
 
     it('detects React.memo(React.forwardRef(...))', () => {
-      expect(detect(`
+      expect(
+        detect(`
         import React from 'react';
         export const Button = React.memo(
           React.forwardRef<HTMLButtonElement, { label: string }>((props, ref) => <button ref={ref} />)
         );
-      `)).toEqual(['Button']);
+      `)
+      ).toEqual(['Button']);
     });
 
     it('detects React.lazy', () => {
@@ -264,9 +305,10 @@ describe('detectComponents', () => {
       const candidates = exports
         .filter((exp) => {
           const name = exp.getName();
-          if (name !== 'default' && !/^[A-Z]/.test(name)) return false;
-          const resolved =
-            exp.flags & ts.SymbolFlags.Alias ? checker.getAliasedSymbol(exp) : exp;
+          if (name !== 'default' && !/^[A-Z]/.test(name)) {
+            return false;
+          }
+          const resolved = exp.flags & ts.SymbolFlags.Alias ? checker.getAliasedSymbol(exp) : exp;
           return !!resolved.valueDeclaration;
         })
         .map((exp) => ({
@@ -282,74 +324,94 @@ describe('detectComponents', () => {
 
   describe('default exports', () => {
     it('detects default exported component', () => {
-      expect(detect(`
+      expect(
+        detect(`
         import React from 'react';
         const Button = (props: { label: string }) => <button />;
         export default Button;
-      `)).toEqual(['default']);
+      `)
+      ).toEqual(['default']);
     });
 
     it('detects inline default export', () => {
-      expect(detect(`
+      expect(
+        detect(`
         import React from 'react';
         export default (props: { label: string }) => <button />;
-      `)).toEqual(['default']);
+      `)
+      ).toEqual(['default']);
     });
 
     it('detects default export function declaration', () => {
-      expect(detect(`
+      expect(
+        detect(`
         import React from 'react';
         export default function Button(props: { label: string }) { return <button /> }
-      `)).toEqual(['default']);
+      `)
+      ).toEqual(['default']);
     });
   });
 
   describe('non-components', () => {
     it('rejects plain object', () => {
-      expect(detect(`
+      expect(
+        detect(`
         export const Config = { key: 'value' };
-      `)).toEqual([]);
+      `)
+      ).toEqual([]);
     });
 
     it('rejects lowercase exports (JSX intrinsic rule)', () => {
-      expect(detect(`
+      expect(
+        detect(`
         import React from 'react';
         export const button = (props: { label: string }) => <button />;
-      `)).toEqual([]);
+      `)
+      ).toEqual([]);
     });
 
     it('rejects string constant', () => {
-      expect(detect(`
+      expect(
+        detect(`
         export const Title = 'Hello';
-      `)).toEqual([]);
+      `)
+      ).toEqual([]);
     });
 
     it('rejects number constant', () => {
-      expect(detect(`
+      expect(
+        detect(`
         export const Count = 42;
-      `)).toEqual([]);
+      `)
+      ).toEqual([]);
     });
 
     it('rejects array', () => {
-      expect(detect(`
+      expect(
+        detect(`
         export const Items = [1, 2, 3];
-      `)).toEqual([]);
+      `)
+      ).toEqual([]);
     });
 
     it('rejects type-only exports', () => {
-      expect(detect(`
+      expect(
+        detect(`
         export interface ButtonProps { label: string }
         export type Size = 'small' | 'large';
-      `)).toEqual([]);
+      `)
+      ).toEqual([]);
     });
 
     it('rejects class not extending Component', () => {
-      expect(detect(`
+      expect(
+        detect(`
         export class Store {
           data = {};
           get(key: string) { return this.data; }
         }
-      `)).toEqual([]);
+      `)
+      ).toEqual([]);
     });
   });
 
@@ -362,9 +424,11 @@ describe('detectComponents', () => {
     it('rejects lowercase function (RDT bug: detects any single-param fn)', () => {
       // RDT detects any function with 1 param as a component.
       // We reject this because lowercase = intrinsic element in JSX.
-      expect(detect(`
+      expect(
+        detect(`
         export function add(a: number) { return a + 1; }
-      `)).toEqual([]);
+      `)
+      ).toEqual([]);
     });
 
     it('accepts uppercase function returning ReactNode-assignable value', () => {
@@ -372,68 +436,82 @@ describe('detectComponents', () => {
       // for the right reason: (timestamp: number) => string IS a valid
       // JSXElementConstructor<number> because string extends ReactNode.
       // React's type system considers this a component — we don't override that.
-      expect(detect(`
+      expect(
+        detect(`
         export function FormatDate(timestamp: number) { return new Date(timestamp).toISOString(); }
-      `)).toEqual(['FormatDate']);
+      `)
+      ).toEqual(['FormatDate']);
     });
 
     it('accepts function with primitive "props" param returning ReactNode', () => {
       // (props: string) => any is assignable to JSXElementConstructor<string>
       // because any extends ReactNode. React says it's a component.
-      expect(detect(`
+      expect(
+        detect(`
         export function ParseProps(props: string) { return JSON.parse(props); }
-      `)).toEqual(['ParseProps']);
+      `)
+      ).toEqual(['ParseProps']);
     });
 
     it('rejects hook returning non-ReactNode object', () => {
       // Return type { count: number; increment: () => void } is NOT assignable
       // to ReactNode — so this is correctly rejected by JSXElementConstructor check.
-      expect(detect(`
+      expect(
+        detect(`
         export function UseCounter(initial: number) {
           return { count: initial, increment: () => {} };
         }
-      `)).toEqual([]);
+      `)
+      ).toEqual([]);
     });
 
     it('rejects higher-order function returning non-component', () => {
       // Return type is a function returning { valid: boolean; errors: never[] }
       // — not assignable to ReactNode.
-      expect(detect(`
+      expect(
+        detect(`
         export function CreateValidator(schema: object) {
           return (data: unknown) => ({ valid: true, errors: [] });
         }
-      `)).toEqual([]);
+      `)
+      ).toEqual([]);
     });
 
     it('rejects enum-like const object', () => {
       // Object with no call/construct signature — never a JSXElementConstructor.
-      expect(detect(`
+      expect(
+        detect(`
         export const ButtonVariant = {
           Primary: 'primary',
           Secondary: 'secondary',
         } as const;
-      `)).toEqual([]);
+      `)
+      ).toEqual([]);
     });
   });
 
   describe('mixed exports', () => {
     it('only detects components among mixed exports', () => {
-      expect(detect(`
+      expect(
+        detect(`
         import React from 'react';
         export const Button = (props: { label: string }) => <button />;
         export const Config = { key: 'value' };
         export const Icon = (props: { name: string }) => <span />;
         export const SIZES = ['small', 'large'] as const;
-      `)).toEqual(['Button', 'Icon']);
+      `)
+      ).toEqual(['Button', 'Icon']);
     });
 
     it('detects components alongside type exports', () => {
-      expect(detect(`
+      expect(
+        detect(`
         import React from 'react';
         export interface ButtonProps { label: string }
         export const Button = (props: ButtonProps) => <button />;
         export type Size = 'small' | 'large';
-      `)).toEqual(['Button']);
+      `)
+      ).toEqual(['Button']);
     });
   });
 });
@@ -2255,47 +2333,57 @@ describe('QA: patterns RDT fails on', () => {
 
   describe('Pattern 8: false positive rejection', () => {
     it('rejects utility function with single object param', () => {
-      expect(detect(`
+      expect(
+        detect(`
         export function CreateTheme(options: { primary: string; secondary: string }) {
           return { colors: options };
         }
-      `)).toEqual([]);
+      `)
+      ).toEqual([]);
     });
 
     it('rejects higher-order function returning non-component', () => {
-      expect(detect(`
+      expect(
+        detect(`
         export function CreateValidator(config: { strict: boolean }) {
           return (value: string) => config.strict ? value.trim() : value;
         }
-      `)).toEqual([]);
+      `)
+      ).toEqual([]);
     });
 
     it('rejects class not extending React.Component', () => {
-      expect(detect(`
+      expect(
+        detect(`
         export class EventEmitter {
           private listeners = new Map<string, Function[]>();
           on(event: string, fn: Function) { /* ... */ }
           emit(event: string) { /* ... */ }
         }
-      `)).toEqual([]);
+      `)
+      ).toEqual([]);
     });
 
     it('rejects namespace-like const object', () => {
-      expect(detect(`
+      expect(
+        detect(`
         export const Utils = {
           format: (value: string) => value.trim(),
           parse: (input: string) => JSON.parse(input),
         };
-      `)).toEqual([]);
+      `)
+      ).toEqual([]);
     });
 
     it('rejects async function returning non-ReactNode', () => {
-      expect(detect(`
+      expect(
+        detect(`
         export async function FetchData(url: string) {
           const response = await fetch(url);
           return response.json();
         }
-      `)).toEqual([]);
+      `)
+      ).toEqual([]);
     });
   });
 });

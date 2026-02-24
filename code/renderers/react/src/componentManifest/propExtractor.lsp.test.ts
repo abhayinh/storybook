@@ -1,10 +1,9 @@
 /**
  * PropExtractor tests using the LanguageService (LSP) approach.
  *
- * These are copies of the tests in propExtractor.test.ts, rewritten to use
- * PropExtractionProject (persistent LanguageService) instead of createVirtualProgram
- * (one-shot ts.Program per test). This makes the entire suite much faster since
- * the LS is created once and incrementally reused.
+ * These are copies of the tests in propExtractor.test.ts, rewritten to use PropExtractionProject
+ * (persistent LanguageService) instead of createVirtualProgram (one-shot ts.Program per test). This
+ * makes the entire suite much faster since the LS is created once and incrementally reused.
  *
  * The original tests in propExtractor.test.ts are kept for reference.
  */
@@ -22,8 +21,8 @@ import type { ComponentDoc } from './propExtractor';
 // ---------------------------------------------------------------------------
 
 /**
- * Use ts.sys for all file I/O. The react vitest setup mocks node:fs with memfs,
- * but ts.sys uses the real filesystem (it imported fs before mocks were applied).
+ * Use ts.sys for all file I/O. The react vitest setup mocks node:fs with memfs, but ts.sys uses the
+ * real filesystem (it imported fs before mocks were applied).
  */
 const sys = ts.sys;
 
@@ -31,8 +30,8 @@ const sys = ts.sys;
 const MONOREPO_ROOT = path.resolve(__dirname, '../../../../..');
 
 /**
- * All test source files, keyed by relative path within the temp project.
- * Written to disk in beforeAll, included in a single tsconfig.
+ * All test source files, keyed by relative path within the temp project. Written to disk in
+ * beforeAll, included in a single tsconfig.
  */
 const TEST_FILES: Record<string, string> = {
   // =========================================================================
@@ -1070,7 +1069,9 @@ let filePaths: Record<string, string>;
 
 /** Recursively delete a directory using ts.sys (bypasses memfs mock). */
 function rmrf(dir: string) {
-  if (!sys.directoryExists(dir)) return;
+  if (!sys.directoryExists(dir)) {
+    return;
+  }
   for (const entry of sys.readDirectory(dir, undefined, undefined, ['**/*'])) {
     sys.deleteFile!(entry);
   }
@@ -1099,7 +1100,9 @@ beforeAll(() => {
       let current = tempDir;
       for (const part of parts) {
         current = path.join(current, part);
-        if (!sys.directoryExists(current)) sys.createDirectory(current);
+        if (!sys.directoryExists(current)) {
+          sys.createDirectory(current);
+        }
       }
     }
     sys.writeFile(fp, content);
@@ -1134,7 +1137,9 @@ beforeAll(() => {
 
 afterAll(() => {
   project?.dispose();
-  if (tempDir) rmrf(tempDir);
+  if (tempDir) {
+    rmrf(tempDir);
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -1144,7 +1149,9 @@ afterAll(() => {
 /** Extract docs for a test file by its key in TEST_FILES. */
 function docs(fileName: string): ComponentDoc[] {
   const fp = filePaths[fileName];
-  if (!fp) throw new Error(`Unknown test file: "${fileName}"`);
+  if (!fp) {
+    throw new Error(`Unknown test file: "${fileName}"`);
+  }
   return project.extractDocs(fp);
 }
 
