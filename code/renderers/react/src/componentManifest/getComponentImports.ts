@@ -107,7 +107,7 @@ export const getComponents = ({
     JSXOpeningElement(p) {
       // Count JSX ancestor depth (how many JSXElements wrap this one)
       let depth = 0;
-      let ancestor = p.parentPath;
+      let ancestor: typeof p.parentPath | null = p.parentPath;
       while (ancestor) {
         if (ancestor.isJSXElement()) depth++;
         ancestor = ancestor.parentPath;
