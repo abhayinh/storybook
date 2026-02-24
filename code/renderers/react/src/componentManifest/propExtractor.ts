@@ -3,20 +3,18 @@
  *
  * Component detection uses JSX elements in a virtual probe file:
  *
- *   export const __el_Button__ = <Button />;
+ * Export const **el_Button** = <Button />;
  *
  * TypeScript resolves props the same way as autocompletion — by calling
- * `checker.getResolvedSignature()` on the JSX element. For polymorphic
- * components with generic call signatures (e.g. Mantine's polymorphicFactory),
- * TypeScript instantiates the generic with its default type parameter,
- * giving the correct concrete props.
+ * `checker.getResolvedSignature()` on the JSX element. For polymorphic components with generic call
+ * signatures (e.g. Mantine's polymorphicFactory), TypeScript instantiates the generic with its
+ * default type parameter, giving the correct concrete props.
  *
- * This avoids the `ComponentProps<T>` / `infer P` limitation where
- * TypeScript cannot infer P from a generic call signature (TS #61133).
+ * This avoids the `ComponentProps<T>` / `infer P` limitation where TypeScript cannot infer P from a
+ * generic call signature (TS #61133).
  *
- * React is the sole authority on what constitutes a component.
- * No manual heuristics are layered on top. Uppercase filtering mirrors
- * how JSX itself distinguishes intrinsic elements (`<div>`) from
+ * React is the sole authority on what constitutes a component. No manual heuristics are layered on
+ * top. Uppercase filtering mirrors how JSX itself distinguishes intrinsic elements (`<div>`) from
  * components (`<Button>`).
  */
 import type ts from 'typescript';
@@ -68,8 +66,8 @@ const MAX_SERIALIZATION_DEPTH = 5;
 /**
  * Extracts candidate component exports from a source file.
  *
- * Candidates are uppercase-named value exports (or `default`).
- * Type-only exports (interfaces, type aliases) are excluded.
+ * Candidates are uppercase-named value exports (or `default`). Type-only exports (interfaces, type
+ * aliases) are excluded.
  */
 export function getCandidates(
   typescript: typeof ts,
@@ -78,17 +76,23 @@ export function getCandidates(
 ): Array<{ exportName: string; isDefault: boolean }> {
   const checker = program.getTypeChecker();
   const sourceFile = program.getSourceFile(filePath);
-  if (!sourceFile) return [];
+  if (!sourceFile) {
+    return [];
+  }
 
   const moduleSymbol = checker.getSymbolAtLocation(sourceFile);
-  if (!moduleSymbol) return [];
+  if (!moduleSymbol) {
+    return [];
+  }
 
   const exports = checker.getExportsOfModule(moduleSymbol);
 
   return exports
     .filter((exp) => {
       const name = exp.getName();
-      if (name !== 'default' && !/^[A-Z]/.test(name)) return false;
+      if (name !== 'default' && !/^[A-Z]/.test(name)) {
+        return false;
+      }
       const resolved =
         exp.flags & typescript.SymbolFlags.Alias ? checker.getAliasedSymbol(exp) : exp;
       return !!resolved.valueDeclaration;
@@ -106,19 +110,18 @@ export function getCandidates(
 /**
  * Generates a virtual TSX source with two mechanisms per candidate:
  *
- * 1. **Conditional type alias** — detects whether the export is a valid JSX
- *    component (`typeof X extends JSXElementConstructor<any> ? true : never`).
- *    Non-components resolve to `never` → filtered out.
- *
- * 2. **JSX self-closing element** — extracts concrete props via
- *    `checker.getResolvedSignature()`. For polymorphic components with generic
- *    call signatures (e.g. Mantine's polymorphicFactory), TypeScript
- *    instantiates the generic with its default type parameter automatically.
- *    This avoids the `ComponentProps<T>` / `infer P` limitation (TS #61133).
+ * 1. **Conditional type alias** — detects whether the export is a valid JSX component (`typeof X
+ *    extends JSXElementConstructor<any> ? true : never`). Non-components resolve to `never` →
+ *    filtered out.
+ * 2. **JSX self-closing element** — extracts concrete props via `checker.getResolvedSignature()`. For
+ *    polymorphic components with generic call signatures (e.g. Mantine's polymorphicFactory),
+ *    TypeScript instantiates the generic with its default type parameter automatically. This avoids
+ *    the `ComponentProps<T>` / `infer P` limitation (TS #61133).
  *
  * The conditional type handles detection, JSX handles props — best of both.
  *
  * For a file with `export const Button` and `export default Header`:
+ *
  * ```tsx
  * import { ComponentProps, JSXElementConstructor } from 'react';
  * import __Default__, { Button } from './Component';
@@ -143,8 +146,12 @@ export function generateProbeSource(
 
   // Build import statement
   const parts: string[] = [];
-  if (hasDefault) parts.push('__Default__');
-  if (named.length > 0) parts.push(`{ ${named.map((c) => c.exportName).join(', ')} }`);
+  if (hasDefault) {
+    parts.push('__Default__');
+  }
+  if (named.length > 0) {
+    parts.push(`{ ${named.map((c) => c.exportName).join(', ')} }`);
+  }
 
   if (parts.length > 0) {
     lines.push(`import ${parts.join(', ')} from '${importPath}';`);
@@ -182,17 +189,15 @@ export function generateProbeSource(
 /**
  * Resolves props types from a probe source file using a hybrid approach:
  *
- * 1. **Detection via conditional types** — checks `__det_X__` type aliases.
- *    If the alias resolves to `never`, X is not a JSXElementConstructor → skip.
- *
- * 2. **Props via JSX elements** — for detected components, walks
- *    JsxSelfClosingElement nodes and uses `checker.getResolvedSignature()` to
- *    get concrete props. For polymorphic components with generic call signatures,
- *    TypeScript instantiates the generic with its default type parameter
+ * 1. **Detection via conditional types** — checks `__det_X__` type aliases. If the alias resolves to
+ *    `never`, X is not a JSXElementConstructor → skip.
+ * 2. **Props via JSX elements** — for detected components, walks JsxSelfClosingElement nodes and uses
+ *    `checker.getResolvedSignature()` to get concrete props. For polymorphic components with
+ *    generic call signatures, TypeScript instantiates the generic with its default type parameter
  *    automatically — avoiding the `ComponentProps<T>` / `infer P` limitation.
  *
- * This is the core logic shared between the standalone `detectComponents`
- * and the LanguageService-based `PropExtractionProject`.
+ * This is the core logic shared between the standalone `detectComponents` and the
+ * LanguageService-based `PropExtractionProject`.
  */
 export function resolveProbeTypes(
   typescript: typeof ts,
@@ -202,7 +207,9 @@ export function resolveProbeTypes(
   detTypeMap?: Map<string, string>
 ): Map<string, ts.Type> {
   const propsTypes = new Map<string, ts.Type>();
-  if (!probeSourceFile) return propsTypes;
+  if (!probeSourceFile) {
+    return propsTypes;
+  }
 
   // Step 1: Detection — check conditional type aliases to find real components
   const detectedComponents = new Set<string>();
@@ -212,14 +219,22 @@ export function resolveProbeTypes(
       const probeExports = checker.getExportsOfModule(probeModSym);
       for (const [exportName, detTypeName] of detTypeMap) {
         const sym = probeExports.find((e) => e.getName() === detTypeName);
-        if (!sym) continue;
+        if (!sym) {
+          continue;
+        }
         const decls = sym.getDeclarations();
-        if (!decls?.length) continue;
+        if (!decls?.length) {
+          continue;
+        }
         const decl = decls[0];
-        if (!typescript.isTypeAliasDeclaration(decl)) continue;
+        if (!typescript.isTypeAliasDeclaration(decl)) {
+          continue;
+        }
         const resolvedType = checker.getTypeFromTypeNode(decl.type);
         // never → React says this is not a JSXElementConstructor. Skip.
-        if (resolvedType.flags & typescript.TypeFlags.Never) continue;
+        if (resolvedType.flags & typescript.TypeFlags.Never) {
+          continue;
+        }
         detectedComponents.add(exportName);
       }
     }
@@ -244,23 +259,32 @@ export function resolveProbeTypes(
         parent = parent.parent;
       }
 
-      if (!varName) return;
+      if (!varName) {
+        return;
+      }
       const exportName = reverseMap.get(varName);
-      if (exportName === undefined) return;
+      if (exportName === undefined) {
+        return;
+      }
 
       // If we have detection info, only process detected components
-      if (detTypeMap && !detectedComponents.has(exportName)) return;
+      if (detTypeMap && !detectedComponents.has(exportName)) {
+        return;
+      }
 
       // Get the resolved signature — same mechanism as autocomplete
       const sig = checker.getResolvedSignature(node);
-      if (!sig) return;
+      if (!sig) {
+        return;
+      }
 
       const params = sig.getParameters();
       if (params.length === 0) {
         // Component with no props (e.g. `() => <svg />`)
-        propsTypes.set(exportName, checker.getTypeFromTypeNode(
-          typescript.factory.createTypeLiteralNode([])
-        ));
+        propsTypes.set(
+          exportName,
+          checker.getTypeFromTypeNode(typescript.factory.createTypeLiteralNode([]))
+        );
         return;
       }
 
@@ -280,8 +304,8 @@ export function resolveProbeTypes(
 // ---------------------------------------------------------------------------
 
 /**
- * Creates a compiler host that serves the probe file from memory while
- * reusing source files from the original program for all other files.
+ * Creates a compiler host that serves the probe file from memory while reusing source files from
+ * the original program for all other files.
  */
 function createProbeHost(
   typescript: typeof ts,
@@ -310,28 +334,42 @@ function createProbeHost(
       return typescript.createSourceFile(fileName, probeSource, version);
     }
     const orig = originalFiles.get(fileName);
-    if (orig) return orig;
+    if (orig) {
+      return orig;
+    }
     return origGetSourceFile(fileName, languageVersionOrOptions);
   };
 
   host.fileExists = (fileName) => {
-    if (fileName === probeFilePath) return true;
-    if (originalFiles.has(fileName)) return true;
+    if (fileName === probeFilePath) {
+      return true;
+    }
+    if (originalFiles.has(fileName)) {
+      return true;
+    }
     return origFileExists(fileName);
   };
 
   host.readFile = (fileName) => {
-    if (fileName === probeFilePath) return probeSource;
+    if (fileName === probeFilePath) {
+      return probeSource;
+    }
     const orig = originalFiles.get(fileName);
-    if (orig) return orig.text;
+    if (orig) {
+      return orig.text;
+    }
     return origReadFile(fileName);
   };
 
   host.directoryExists = (dir) => {
     const dirWithSlash = dir.endsWith('/') ? dir : dir + '/';
-    if (probeFilePath.startsWith(dirWithSlash)) return true;
+    if (probeFilePath.startsWith(dirWithSlash)) {
+      return true;
+    }
     for (const key of originalFiles.keys()) {
-      if (key.startsWith(dirWithSlash)) return true;
+      if (key.startsWith(dirWithSlash)) {
+        return true;
+      }
     }
     return origDirectoryExists ? origDirectoryExists(dir) : true;
   };
@@ -342,13 +380,11 @@ function createProbeHost(
 /**
  * Detects which exports are React components using a hybrid approach:
  *
- * 1. **Detection** via conditional types: `typeof X extends JSXElementConstructor<any>`
- *    rejects non-components (plain objects, strings, utility functions).
- *
- * 2. **Props extraction** via JSX elements: `<X />` with `getResolvedSignature()`
- *    correctly handles polymorphic components with generic call signatures
- *    (e.g. Mantine's polymorphicFactory), avoiding the `ComponentProps<T>` /
- *    `infer P` limitation (TS #61133).
+ * 1. **Detection** via conditional types: `typeof X extends JSXElementConstructor<any>` rejects
+ *    non-components (plain objects, strings, utility functions).
+ * 2. **Props extraction** via JSX elements: `<X />` with `getResolvedSignature()` correctly handles
+ *    polymorphic components with generic call signatures (e.g. Mantine's polymorphicFactory),
+ *    avoiding the `ComponentProps<T>` / `infer P` limitation (TS #61133).
  *
  * This delegates all component detection logic to React — no manual heuristics.
  */
@@ -357,13 +393,18 @@ export function detectComponents(
   filePath: string,
   candidates: Array<{ exportName: string; isDefault: boolean }>,
   originalProgram: ts.Program
-): {
-  propsTypes: Map<string, ts.Type>;
-  probeChecker: ts.TypeChecker;
-  probeProgram: ts.Program;
-} | undefined {
+):
+  | {
+      propsTypes: Map<string, ts.Type>;
+      probeChecker: ts.TypeChecker;
+      probeProgram: ts.Program;
+    }
+  | undefined {
   const dir = filePath.substring(0, filePath.lastIndexOf('/'));
-  const baseName = filePath.split('/').pop()!.replace(/\.(tsx?|jsx?)$/, '');
+  const baseName = filePath
+    .split('/')
+    .pop()!
+    .replace(/\.(tsx?|jsx?)$/, '');
   // .tsx extension required for JSX elements in the probe
   const probeFilePath = `${dir}/__probe_${baseName}__.tsx`;
 
@@ -381,7 +422,9 @@ export function detectComponents(
 
   const probeChecker = probeProgram.getTypeChecker();
   const probeSF = probeProgram.getSourceFile(probeFilePath);
-  if (!probeSF) return undefined;
+  if (!probeSF) {
+    return undefined;
+  }
 
   const propsTypes = resolveProbeTypes(typescript, probeChecker, probeSF, varNameMap, detTypeMap);
 
@@ -393,17 +436,19 @@ export function detectComponents(
 // ---------------------------------------------------------------------------
 
 /**
- * Returns the source file for a property symbol, used by getBulkSourceExclusions
- * to decide whether a prop comes from a "bulk" source (node_modules/.d.ts).
+ * Returns the source file for a property symbol, used by getBulkSourceExclusions to decide whether
+ * a prop comes from a "bulk" source (node_modules/.d.ts).
  *
- * When a prop has multiple declarations (e.g. user re-declares `aria-label` in
- * their own interface AND it exists in React's HTMLAttributes), we check ALL
- * declarations. If ANY declaration is in user code (not node_modules, not .d.ts),
- * we return that user-code path so the prop is NOT bulk-excluded.
+ * When a prop has multiple declarations (e.g. user re-declares `aria-label` in their own interface
+ * AND it exists in React's HTMLAttributes), we check ALL declarations. If ANY declaration is in
+ * user code (not node_modules, not .d.ts), we return that user-code path so the prop is NOT
+ * bulk-excluded.
  */
 function getPropSourceFile(prop: ts.Symbol): string | undefined {
   const declarations = prop.getDeclarations();
-  if (!declarations?.length) return undefined;
+  if (!declarations?.length) {
+    return undefined;
+  }
 
   // If any declaration lives in user code (not node_modules, not .d.ts),
   // return that source — the prop should not be bulk-excluded.
@@ -420,17 +465,16 @@ function getPropSourceFile(prop: ts.Symbol): string | undefined {
 
 function getParentType(typescript: typeof ts, prop: ts.Symbol): ParentType | undefined {
   const declarations = prop.getDeclarations();
-  if (!declarations?.length) return undefined;
+  if (!declarations?.length) {
+    return undefined;
+  }
 
   // Walk up the AST from the property's parent to find the enclosing named type.
   // Props declared in type literals inside intersections (e.g. `type T = { prop: X } & Base`)
   // have the chain: PropertySignature → TypeLiteralNode → IntersectionTypeNode → TypeAliasDeclaration
   let node: ts.Node | undefined = declarations[0].parent;
   while (node) {
-    if (
-      typescript.isInterfaceDeclaration(node) ||
-      typescript.isTypeAliasDeclaration(node)
-    ) {
+    if (typescript.isInterfaceDeclaration(node) || typescript.isTypeAliasDeclaration(node)) {
       return {
         name: node.name.getText(),
         fileName: node.getSourceFile().fileName,
@@ -447,18 +491,19 @@ function getAllDeclarationParents(
   prop: ts.Symbol
 ): ParentType[] | undefined {
   const declarations = prop.getDeclarations();
-  if (!declarations?.length) return undefined;
+  if (!declarations?.length) {
+    return undefined;
+  }
 
   const parents: ParentType[] = [];
 
   for (const declaration of declarations) {
     const { parent } = declaration;
-    if (!parent) continue;
+    if (!parent) {
+      continue;
+    }
 
-    if (
-      typescript.isInterfaceDeclaration(parent) ||
-      typescript.isTypeAliasDeclaration(parent)
-    ) {
+    if (typescript.isInterfaceDeclaration(parent) || typescript.isTypeAliasDeclaration(parent)) {
       parents.push({
         name: parent.name.getText(),
         fileName: parent.getSourceFile().fileName,
@@ -540,8 +585,8 @@ function serializeType(
 // ---------------------------------------------------------------------------
 
 /**
- * Unwraps wrapper calls (React.forwardRef, React.memo, etc.) to find
- * the underlying function expression or declaration.
+ * Unwraps wrapper calls (React.forwardRef, React.memo, etc.) to find the underlying function
+ * expression or declaration.
  */
 function unwrapToFunction(
   typescript: typeof ts,
@@ -549,7 +594,9 @@ function unwrapToFunction(
   depth = 0,
   checker?: ts.TypeChecker
 ): ts.FunctionLikeDeclaration | undefined {
-  if (depth > 5) return undefined;
+  if (depth > 5) {
+    return undefined;
+  }
 
   if (
     typescript.isArrowFunction(node) ||
@@ -563,7 +610,9 @@ function unwrapToFunction(
   if (typescript.isCallExpression(node)) {
     for (const arg of node.arguments) {
       const fn = unwrapToFunction(typescript, arg, depth + 1, checker);
-      if (fn) return fn;
+      if (fn) {
+        return fn;
+      }
     }
   }
 
@@ -583,9 +632,7 @@ function unwrapToFunction(
     const symbol = checker.getSymbolAtLocation(node);
     if (symbol) {
       const resolved =
-        symbol.flags & typescript.SymbolFlags.Alias
-          ? checker.getAliasedSymbol(symbol)
-          : symbol;
+        symbol.flags & typescript.SymbolFlags.Alias ? checker.getAliasedSymbol(symbol) : symbol;
       const decl = resolved.valueDeclaration;
       if (decl && typescript.isVariableDeclaration(decl) && decl.initializer) {
         return unwrapToFunction(typescript, decl.initializer, depth + 1, checker);
@@ -602,10 +649,9 @@ function unwrapToFunction(
 /**
  * Resolves an expression to its literal string representation.
  *
- * For identifiers like `DEFAULT_SIZE` pointing to `const DEFAULT_SIZE = 'md'`,
- * follows the reference chain and returns `'md'` (the literal value).
- * Handles variable declarations, imports, enum members, and property accesses.
- * Falls back to `.getText()` for unresolvable expressions.
+ * For identifiers like `DEFAULT_SIZE` pointing to `const DEFAULT_SIZE = 'md'`, follows the
+ * reference chain and returns `'md'` (the literal value). Handles variable declarations, imports,
+ * enum members, and property accesses. Falls back to `.getText()` for unresolvable expressions.
  */
 function resolveLiteralValue(
   typescript: typeof ts,
@@ -613,7 +659,9 @@ function resolveLiteralValue(
   node: ts.Expression,
   depth = 0
 ): string {
-  if (depth > 5) return node.getText();
+  if (depth > 5) {
+    return node.getText();
+  }
 
   // Direct literals — return source text as-is
   if (
@@ -634,15 +682,17 @@ function resolveLiteralValue(
 
   // Identifier — follow to declaration
   if (typescript.isIdentifier(node)) {
-    if (node.text === 'undefined') return 'undefined';
+    if (node.text === 'undefined') {
+      return 'undefined';
+    }
 
     const symbol = checker.getSymbolAtLocation(node);
-    if (!symbol) return node.getText();
+    if (!symbol) {
+      return node.getText();
+    }
 
     const resolved =
-      symbol.flags & typescript.SymbolFlags.Alias
-        ? checker.getAliasedSymbol(symbol)
-        : symbol;
+      symbol.flags & typescript.SymbolFlags.Alias ? checker.getAliasedSymbol(symbol) : symbol;
 
     const decl = resolved.valueDeclaration;
     if (decl && typescript.isVariableDeclaration(decl) && decl.initializer) {
@@ -686,11 +736,10 @@ function resolveLiteralValue(
 /**
  * Collects default values from an ObjectBindingPattern into the given map.
  *
- * For `{ size = 'md', icon: Icon = DefaultIcon }`, adds:
- *   'size' → "'md'", 'icon' → 'DefaultIcon'
+ * For `{ size = 'md', icon: Icon = DefaultIcon }`, adds: 'size' → "'md'", 'icon' → 'DefaultIcon'
  *
- * When a checker is provided, identifiers like `DEFAULT_SIZE` are resolved
- * to their literal values (e.g. `'md'`).
+ * When a checker is provided, identifiers like `DEFAULT_SIZE` are resolved to their literal values
+ * (e.g. `'md'`).
  */
 function collectBindingDefaults(
   typescript: typeof ts,
@@ -721,11 +770,11 @@ function collectBindingDefaults(
  * Handles two patterns:
  *
  * 1. **Parameter destructuring**: `({ size = 'md' }: Props) => ...`
- * 2. **Body destructuring**: `(props) => { const { size = 'md' } = props; ... }`
- *    Also handles `const { size = 'md' } = resolveProps(props, ...)` and similar.
+ * 2. **Body destructuring**: `(props) => { const { size = 'md' } = props; ... }` Also handles `const {
+ *    size = 'md' } = resolveProps(props, ...)` and similar.
  *
- * Returns Map { 'size' => "'md'" }.
- * For class components or non-destructured params, returns an empty map.
+ * Returns Map { 'size' => "'md'" }. For class components or non-destructured params, returns an
+ * empty map.
  */
 function extractDestructuringDefaults(
   typescript: typeof ts,
@@ -734,7 +783,9 @@ function extractDestructuringDefaults(
 ): Map<string, string> {
   const defaults = new Map<string, string>();
   const decl = resolved.valueDeclaration;
-  if (!decl) return defaults;
+  if (!decl) {
+    return defaults;
+  }
 
   // Find the function: may be directly a function, or wrapped in forwardRef/memo/etc.
   let fn: ts.FunctionLikeDeclaration | undefined;
@@ -759,11 +810,15 @@ function extractDestructuringDefaults(
     fn = unwrapToFunction(typescript, decl.expression, 0, checker);
   }
 
-  if (!fn) return defaults;
+  if (!fn) {
+    return defaults;
+  }
 
   // Get the first parameter (props)
   const firstParam = fn.parameters[0];
-  if (!firstParam) return defaults;
+  if (!firstParam) {
+    return defaults;
+  }
 
   // Case 1: Parameter-level destructuring — ({ size = 'md' }: Props) => ...
   if (typescript.isObjectBindingPattern(firstParam.name)) {
@@ -777,7 +832,9 @@ function extractDestructuringDefaults(
     const body = typescript.isBlock(fn.body) ? fn.body : undefined;
     if (body) {
       for (const stmt of body.statements) {
-        if (!typescript.isVariableStatement(stmt)) continue;
+        if (!typescript.isVariableStatement(stmt)) {
+          continue;
+        }
         for (const varDecl of stmt.declarationList.declarations) {
           if (typescript.isObjectBindingPattern(varDecl.name) && varDecl.initializer) {
             collectBindingDefaults(typescript, varDecl.name, defaults, checker);
@@ -793,8 +850,8 @@ function extractDestructuringDefaults(
 /**
  * Collects default values from an object literal expression.
  *
- * Used for `defaultProps = { size: 'md', disabled: false }` patterns.
- * Handles PropertyAssignment and ShorthandPropertyAssignment.
+ * Used for `defaultProps = { size: 'md', disabled: false }` patterns. Handles PropertyAssignment
+ * and ShorthandPropertyAssignment.
  */
 function collectObjectLiteralDefaults(
   typescript: typeof ts,
@@ -826,11 +883,11 @@ function collectObjectLiteralDefaults(
 }
 
 /**
- * Extracts default values from `Component.defaultProps = {...}` and
- * `static defaultProps = {...}` patterns.
+ * Extracts default values from `Component.defaultProps = {...}` and `static defaultProps = {...}`
+ * patterns.
  *
- * This is a legacy React pattern (deprecated in React 19) but still used
- * in many codebases. Lower priority than destructuring defaults.
+ * This is a legacy React pattern (deprecated in React 19) but still used in many codebases. Lower
+ * priority than destructuring defaults.
  */
 function extractStaticDefaultProps(
   typescript: typeof ts,
@@ -840,30 +897,36 @@ function extractStaticDefaultProps(
   const defaults = new Map<string, string>();
 
   const decl = resolved.valueDeclaration ?? resolved.getDeclarations()?.[0];
-  if (!decl) return defaults;
+  if (!decl) {
+    return defaults;
+  }
   const componentSourceFile = decl.getSourceFile();
 
   for (const stmt of componentSourceFile.statements) {
     // Pattern 1: Class with static defaultProps = { size: 'md' }
     if (typescript.isClassDeclaration(stmt) && stmt.name) {
       const classSymbol = checker.getSymbolAtLocation(stmt.name);
-      if (classSymbol !== resolved) continue;
+      if (classSymbol !== resolved) {
+        continue;
+      }
 
       for (const member of stmt.members) {
-        if (!typescript.isPropertyDeclaration(member)) continue;
-        if (!member.name || member.name.getText() !== 'defaultProps') continue;
-        if (!member.initializer) continue;
+        if (!typescript.isPropertyDeclaration(member)) {
+          continue;
+        }
+        if (!member.name || member.name.getText() !== 'defaultProps') {
+          continue;
+        }
+        if (!member.initializer) {
+          continue;
+        }
 
         let initializer: ts.Expression = member.initializer;
         // Follow identifier reference: static defaultProps = myDefaults
         if (typescript.isIdentifier(initializer)) {
           const sym = checker.getSymbolAtLocation(initializer);
           const symDecl = sym?.valueDeclaration;
-          if (
-            symDecl &&
-            typescript.isVariableDeclaration(symDecl) &&
-            symDecl.initializer
-          ) {
+          if (symDecl && typescript.isVariableDeclaration(symDecl) && symDecl.initializer) {
             initializer = symDecl.initializer;
           }
         }
@@ -881,30 +944,34 @@ function extractStaticDefaultProps(
       stmt.expression.operatorToken.kind === typescript.SyntaxKind.EqualsToken
     ) {
       const left = stmt.expression.left;
-      if (!typescript.isPropertyAccessExpression(left)) continue;
-      if (left.name.text !== 'defaultProps') continue;
+      if (!typescript.isPropertyAccessExpression(left)) {
+        continue;
+      }
+      if (left.name.text !== 'defaultProps') {
+        continue;
+      }
 
       // Check if the expression target is our component
       const targetSymbol = checker.getSymbolAtLocation(left.expression);
-      if (!targetSymbol) continue;
+      if (!targetSymbol) {
+        continue;
+      }
 
       const targetResolved =
         targetSymbol.flags & typescript.SymbolFlags.Alias
           ? checker.getAliasedSymbol(targetSymbol)
           : targetSymbol;
 
-      if (targetResolved !== resolved) continue;
+      if (targetResolved !== resolved) {
+        continue;
+      }
 
       let right: ts.Expression = stmt.expression.right;
       // Follow identifier reference: Button.defaultProps = myDefaults
       if (typescript.isIdentifier(right)) {
         const sym = checker.getSymbolAtLocation(right);
         const symDecl = sym?.valueDeclaration;
-        if (
-          symDecl &&
-          typescript.isVariableDeclaration(symDecl) &&
-          symDecl.initializer
-        ) {
+        if (symDecl && typescript.isVariableDeclaration(symDecl) && symDecl.initializer) {
           right = symDecl.initializer;
         }
       }
@@ -918,9 +985,7 @@ function extractStaticDefaultProps(
   return defaults;
 }
 
-/**
- * Extracts a default value from JSDoc @default / @defaultValue tags on a prop's declaration.
- */
+/** Extracts a default value from JSDoc @default / @defaultValue tags on a prop's declaration. */
 function getJSDocDefault(
   typescript: typeof ts,
   prop: ts.Symbol,
@@ -979,15 +1044,14 @@ function extractPropItem(
 // ---------------------------------------------------------------------------
 
 /**
- * Identifies properties from declaration files or node_modules interfaces
- * with more than LARGE_SOURCE_THRESHOLD properties (e.g. HTMLAttributes,
- * Panda CSS styled-system types). These are filtered to keep the manifest
- * focused on user-defined props.
+ * Identifies properties from declaration files or node_modules interfaces with more than
+ * LARGE_SOURCE_THRESHOLD properties (e.g. HTMLAttributes, Panda CSS styled-system types). These are
+ * filtered to keep the manifest focused on user-defined props.
  *
- * Checks both `node_modules` paths AND `.d.ts` files. The `.d.ts` check
- * catches generated type systems like Panda CSS's `styled-system/` that
- * live outside node_modules but still inject hundreds of CSS properties.
- * Project-local `.d.ts` with fewer than 30 props per file are unaffected.
+ * Checks both `node_modules` paths AND `.d.ts` files. The `.d.ts` check catches generated type
+ * systems like Panda CSS's `styled-system/` that live outside node_modules but still inject
+ * hundreds of CSS properties. Project-local `.d.ts` with fewer than 30 props per file are
+ * unaffected.
  */
 function getBulkSourceExclusions(properties: ts.Symbol[]): Set<string> {
   const sourceCount = new Map<string, number>();
@@ -1052,13 +1116,12 @@ function computeDisplayName(
 /**
  * Builds ComponentDoc array from resolved probe types.
  *
- * Given a checker that has both the original file and probe types resolved,
- * this iterates the original file's exports, matches them against the
- * `propsTypes` map, and serializes each component's props.
+ * Given a checker that has both the original file and probe types resolved, this iterates the
+ * original file's exports, matches them against the `propsTypes` map, and serializes each
+ * component's props.
  *
- * Used by both the standalone `extractComponentDocs` (with a one-shot probe
- * program) and the LanguageService-based `PropExtractionProject` (with a
- * persistent LS program).
+ * Used by both the standalone `extractComponentDocs` (with a one-shot probe program) and the
+ * LanguageService-based `PropExtractionProject` (with a persistent LS program).
  */
 export function extractFromProbe(
   typescript: typeof ts,
@@ -1070,7 +1133,9 @@ export function extractFromProbe(
   defaultsSourcePath?: string
 ): ComponentDoc[] {
   const moduleSymbol = checker.getSymbolAtLocation(sourceFile);
-  if (!moduleSymbol) return [];
+  if (!moduleSymbol) {
+    return [];
+  }
 
   const fileExports = checker.getExportsOfModule(moduleSymbol);
   const results: ComponentDoc[] = [];
@@ -1078,18 +1143,19 @@ export function extractFromProbe(
   for (const exp of fileExports) {
     const exportName = exp.getName();
     const propsType = propsTypes.get(exportName);
-    if (!propsType) continue;
+    if (!propsType) {
+      continue;
+    }
 
-    const resolved =
-      exp.flags & typescript.SymbolFlags.Alias
-        ? checker.getAliasedSymbol(exp)
-        : exp;
+    const resolved = exp.flags & typescript.SymbolFlags.Alias ? checker.getAliasedSymbol(exp) : exp;
 
     const allProperties = propsType.getApparentProperties();
     const excluded = getBulkSourceExclusions(allProperties);
 
     const contextNode = resolved.valueDeclaration ?? resolved.getDeclarations()?.[0];
-    if (!contextNode) continue;
+    if (!contextNode) {
+      continue;
+    }
 
     // Collect defaults: destructuring > defaultProps > JSDoc (in extractPropItem)
     const defaultsMap = extractDestructuringDefaults(typescript, resolved, checker);
@@ -1118,15 +1184,15 @@ export function extractFromProbe(
 
     const props: Record<string, PropItem> = {};
     for (const prop of allProperties) {
-      if (excluded.has(prop.getName())) continue;
+      if (excluded.has(prop.getName())) {
+        continue;
+      }
       props[prop.getName()] = extractPropItem(typescript, checker, prop, contextNode, defaultsMap);
     }
 
     const displayName = computeDisplayName(exp, resolved, sourceFile);
 
-    const description = typescript.displayPartsToString(
-      resolved.getDocumentationComment(checker)
-    );
+    const description = typescript.displayPartsToString(resolved.getDocumentationComment(checker));
 
     results.push({
       displayName,
@@ -1147,14 +1213,12 @@ export function extractFromProbe(
 /**
  * Extracts destructuring defaults from a source file using pure AST walking.
  *
- * Used as a fallback when the primary file is a `.d.ts` (e.g. package imports
- * in monorepos) where function bodies are stripped. Reads the original source
- * file, finds the exported function matching `exportName`, and collects
- * defaults from its parameter destructuring.
+ * Used as a fallback when the primary file is a `.d.ts` (e.g. package imports in monorepos) where
+ * function bodies are stripped. Reads the original source file, finds the exported function
+ * matching `exportName`, and collects defaults from its parameter destructuring.
  *
- * Works without a TypeChecker — only string literal, numeric, boolean, null,
- * and undefined defaults are extracted. Identifier references (e.g. `noop`,
- * `DEFAULT_SIZE`) are included as-is.
+ * Works without a TypeChecker — only string literal, numeric, boolean, null, and undefined defaults
+ * are extracted. Identifier references (e.g. `noop`, `DEFAULT_SIZE`) are included as-is.
  */
 function extractDefaultsFromSourceFile(
   typescript: typeof ts,
@@ -1164,7 +1228,9 @@ function extractDefaultsFromSourceFile(
   const defaults = new Map<string, string>();
 
   const content = typescript.sys.readFile(filePath);
-  if (!content) return defaults;
+  if (!content) {
+    return defaults;
+  }
 
   const sf = typescript.createSourceFile(
     filePath,
@@ -1194,11 +1260,15 @@ function extractDefaultsFromSourceFile(
   // For "default" export, look at export default ... or export { X as default }.
   // For named exports, look at export const X = ... or export { X }.
   const fn = findExportedFunction(typescript, sf, exportName, varMap);
-  if (!fn) return defaults;
+  if (!fn) {
+    return defaults;
+  }
 
   // Extract destructuring defaults from the first parameter
   const firstParam = fn.parameters[0];
-  if (!firstParam) return defaults;
+  if (!firstParam) {
+    return defaults;
+  }
 
   if (typescript.isObjectBindingPattern(firstParam.name)) {
     collectBindingDefaults(typescript, firstParam.name, defaults);
@@ -1207,7 +1277,9 @@ function extractDefaultsFromSourceFile(
     const body = typescript.isBlock(fn.body) ? fn.body : undefined;
     if (body) {
       for (const stmt of body.statements) {
-        if (!typescript.isVariableStatement(stmt)) continue;
+        if (!typescript.isVariableStatement(stmt)) {
+          continue;
+        }
         for (const varDecl of stmt.declarationList.declarations) {
           if (typescript.isObjectBindingPattern(varDecl.name) && varDecl.initializer) {
             collectBindingDefaults(typescript, varDecl.name, defaults);
@@ -1221,8 +1293,8 @@ function extractDefaultsFromSourceFile(
 }
 
 /**
- * Finds the function-like declaration for a given export name in the source file.
- * Pure AST — follows Object.assign, forwardRef, memo, as-casts, and identifier refs.
+ * Finds the function-like declaration for a given export name in the source file. Pure AST —
+ * follows Object.assign, forwardRef, memo, as-casts, and identifier refs.
  */
 function findExportedFunction(
   typescript: typeof ts,
@@ -1234,11 +1306,7 @@ function findExportedFunction(
 
   for (const stmt of sf.statements) {
     // export default X
-    if (
-      exportName === 'default' &&
-      typescript.isExportAssignment(stmt) &&
-      !stmt.isExportEquals
-    ) {
+    if (exportName === 'default' && typescript.isExportAssignment(stmt) && !stmt.isExportEquals) {
       targetExpr = stmt.expression;
       break;
     }
@@ -1246,12 +1314,18 @@ function findExportedFunction(
     // export const X = ... or export function X
     if (typescript.isVariableStatement(stmt) && hasExportModifier(typescript, stmt)) {
       for (const decl of stmt.declarationList.declarations) {
-        if (typescript.isIdentifier(decl.name) && decl.name.text === exportName && decl.initializer) {
+        if (
+          typescript.isIdentifier(decl.name) &&
+          decl.name.text === exportName &&
+          decl.initializer
+        ) {
           targetExpr = decl.initializer;
           break;
         }
       }
-      if (targetExpr) break;
+      if (targetExpr) {
+        break;
+      }
     }
 
     if (
@@ -1264,7 +1338,11 @@ function findExportedFunction(
     }
 
     // export { StackImpl as Stack } or export { X }
-    if (typescript.isExportDeclaration(stmt) && stmt.exportClause && typescript.isNamedExports(stmt.exportClause)) {
+    if (
+      typescript.isExportDeclaration(stmt) &&
+      stmt.exportClause &&
+      typescript.isNamedExports(stmt.exportClause)
+    ) {
       for (const spec of stmt.exportClause.elements) {
         const exported = spec.name.text;
         const local = spec.propertyName ? spec.propertyName.text : spec.name.text;
@@ -1273,7 +1351,9 @@ function findExportedFunction(
           break;
         }
       }
-      if (targetExpr) break;
+      if (targetExpr) {
+        break;
+      }
     }
   }
 
@@ -1283,14 +1363,16 @@ function findExportedFunction(
     targetExpr = varMap.get(exportName) as ts.Expression | undefined;
   }
 
-  if (!targetExpr) return undefined;
+  if (!targetExpr) {
+    return undefined;
+  }
 
   return unwrapToFunctionAST(typescript, targetExpr, varMap, 0);
 }
 
 /**
- * Pure AST version of unwrapToFunction. Follows forwardRef, memo, Object.assign,
- * as-casts, parenthesized expressions, and identifier references via varMap.
+ * Pure AST version of unwrapToFunction. Follows forwardRef, memo, Object.assign, as-casts,
+ * parenthesized expressions, and identifier references via varMap.
  */
 function unwrapToFunctionAST(
   typescript: typeof ts,
@@ -1298,7 +1380,9 @@ function unwrapToFunctionAST(
   varMap: Map<string, ts.Expression>,
   depth: number
 ): ts.FunctionLikeDeclaration | undefined {
-  if (depth > 10) return undefined;
+  if (depth > 10) {
+    return undefined;
+  }
 
   // Already a function
   if (typescript.isFunctionExpression(node) || typescript.isArrowFunction(node)) {
@@ -1354,9 +1438,7 @@ function unwrapToFunctionAST(
   return undefined;
 }
 
-/**
- * Finds the implementation body for an overloaded function declaration.
- */
+/** Finds the implementation body for an overloaded function declaration. */
 function findFunctionImpl(
   typescript: typeof ts,
   sf: ts.SourceFile,
@@ -1374,7 +1456,8 @@ function findFunctionImpl(
 function hasExportModifier(typescript: typeof ts, node: ts.Statement): boolean {
   return (
     typescript.canHaveModifiers(node) &&
-    typescript.getModifiers(node)?.some((m) => m.kind === typescript.SyntaxKind.ExportKeyword) === true
+    typescript.getModifiers(node)?.some((m) => m.kind === typescript.SyntaxKind.ExportKeyword) ===
+      true
   );
 }
 
@@ -1385,10 +1468,9 @@ function hasExportModifier(typescript: typeof ts, node: ts.Statement): boolean {
 /**
  * Extracts component documentation from a TypeScript source file.
  *
- * Uses React's own JSX type system: an export is a component if and only if
- * `typeof X extends JSXElementConstructor<any>`. Props are extracted via
- * `ComponentProps<typeof X>`. Both checks happen in a single virtual probe
- * file that TypeScript's checker evaluates.
+ * Uses React's own JSX type system: an export is a component if and only if `typeof X extends
+ * JSXElementConstructor<any>`. Props are extracted via `ComponentProps<typeof X>`. Both checks
+ * happen in a single virtual probe file that TypeScript's checker evaluates.
  *
  * @param typescript - The TypeScript module (passed to avoid top-level import)
  * @param filePath - Absolute path to the source file
@@ -1401,16 +1483,22 @@ export function extractComponentDocs(
   program: ts.Program
 ): ComponentDoc[] {
   const candidates = getCandidates(typescript, program, filePath);
-  if (candidates.length === 0) return [];
+  if (candidates.length === 0) {
+    return [];
+  }
 
   // Let React's type system decide which exports are components
   const probe = detectComponents(typescript, filePath, candidates, program);
-  if (!probe) return [];
+  if (!probe) {
+    return [];
+  }
 
   const { propsTypes, probeChecker, probeProgram } = probe;
 
   const probeSourceFile = probeProgram.getSourceFile(filePath);
-  if (!probeSourceFile) return [];
+  if (!probeSourceFile) {
+    return [];
+  }
 
   return extractFromProbe(typescript, probeChecker, filePath, probeSourceFile, propsTypes);
 }

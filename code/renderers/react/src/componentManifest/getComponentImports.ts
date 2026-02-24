@@ -74,8 +74,8 @@ const addUniqueBy = <T>(arr: T[], item: T, eq: (a: T) => boolean) => {
  * - If react-docgen determines a package import override, it is stored in `importOverride`.
  */
 /**
- * Accumulated timing for react-docgen and react-docgen-typescript.
- * Reset via `resetDocgenTimings()` before a manifest pass, then read after.
+ * Accumulated timing for react-docgen and react-docgen-typescript. Reset via `resetDocgenTimings()`
+ * before a manifest pass, then read after.
  */
 export const docgenTimings = { reactDocgenMs: 0, reactDocgenTypescriptMs: 0 };
 export function resetDocgenTimings() {
@@ -109,7 +109,9 @@ export const getComponents = ({
       let depth = 0;
       let ancestor: typeof p.parentPath | null = p.parentPath;
       while (ancestor) {
-        if (ancestor.isJSXElement()) depth++;
+        if (ancestor.isJSXElement()) {
+          depth++;
+        }
         ancestor = ancestor.parentPath;
       }
 

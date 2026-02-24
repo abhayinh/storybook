@@ -2,25 +2,21 @@
  * PropExtractionProject — one TS LanguageService per tsconfig.
  *
  * Follows Volar's typescriptProjectLs.ts + createChecker.ts patterns:
- * - LanguageServiceHost with virtual probe file
- * - projectVersion++ on file changes (smart: only for known files)
- * - Shared fsFileSnapshots with mtime-based caching (owned by Manager)
- * - shouldCheckRootFiles flag for lazy tsconfig re-evaluation (Volar's createChecker.ts)
- * - tryAddFile for dynamic file inclusion (Volar's typescriptProjectLs.ts)
  *
- * The probe file is a virtual TypeScript file that imports from the target
- * component file and uses React's ComponentProps<typeof X> to extract props.
- * Updating probeContent + bumping probeVersion is enough — the LanguageService
- * sees a new version and re-evaluates incrementally.
+ * - LanguageServiceHost with virtual probe file
+ * - ProjectVersion++ on file changes (smart: only for known files)
+ * - Shared fsFileSnapshots with mtime-based caching (owned by Manager)
+ * - ShouldCheckRootFiles flag for lazy tsconfig re-evaluation (Volar's createChecker.ts)
+ * - TryAddFile for dynamic file inclusion (Volar's typescriptProjectLs.ts)
+ *
+ * The probe file is a virtual TypeScript file that imports from the target component file and uses
+ * React's ComponentProps<typeof X> to extract props. Updating probeContent + bumping probeVersion
+ * is enough — the LanguageService sees a new version and re-evaluates incrementally.
  */
 import * as path from 'path';
 import type ts from 'typescript';
-import {
-  type ComponentDoc,
-  extractFromProbe,
-  generateProbeSource,
-  resolveProbeTypes,
-} from '../propExtractor';
+
+import { type ComponentDoc, extractFromProbe, resolveProbeTypes } from '../propExtractor';
 
 export class PropExtractionProject {
   private ls: ts.LanguageService;
@@ -36,9 +32,8 @@ export class PropExtractionProject {
   private cachedFileNames: string[] | undefined;
 
   /**
-   * Volar pattern (createChecker.ts lines 436-447):
-   * Lazy flag that defers tsconfig re-parsing until the next getProjectVersion()
-   * or getScriptFileNames() call. Set on file creation/deletion.
+   * Volar pattern (createChecker.ts lines 436-447): Lazy flag that defers tsconfig re-parsing until
+   * the next getProjectVersion() or getScriptFileNames() call. Set on file creation/deletion.
    */
   private shouldCheckRootFiles = false;
 
@@ -53,9 +48,9 @@ export class PropExtractionProject {
     /**
      * Shared snapshot cache owned by PropExtractionManager.
      *
-     * Volar pattern (createChecker.ts line 83): module-level fsFileSnapshots.
-     * Multiple projects referencing the same file (e.g. @types/react) share
-     * one cached snapshot instead of reading from disk independently.
+     * Volar pattern (createChecker.ts line 83): module-level fsFileSnapshots. Multiple projects
+     * referencing the same file (e.g. @types/react) share one cached snapshot instead of reading
+     * from disk independently.
      */
     private sharedSnapshots: Map<
       string,
@@ -64,12 +59,13 @@ export class PropExtractionProject {
   ) {
     const projectRoot = configPath
       ? path.dirname(configPath)
-      : commandLine.options.rootDir ?? process.cwd();
+      : (commandLine.options.rootDir ?? process.cwd());
     // .tsx extension required for JSX elements in the probe
     this.probeFilePath = path.join(projectRoot, '__probe__.tsx');
     this.probeFilePathPkg = path.join(projectRoot, '__probe_pkg__.tsx');
     this.fileNamesSet = new Set(commandLine.fileNames);
 
+    // eslint-disable-next-line @typescript-eslint/no-this-alias -- LanguageServiceHost closures need `self`
     const self = this;
 
     // Volar pattern (createProject.ts line 52): spread ts.sys as base, then override.
@@ -96,15 +92,25 @@ export class PropExtractionProject {
         // Volar pattern (createChecker.ts): cache the file names array to avoid
         // re-creating it on every LS sync call. Invalidated when fileNames change.
         if (!self.cachedFileNames) {
-          self.cachedFileNames = [...self.commandLine.fileNames, self.probeFilePath, self.probeFilePathPkg];
+          self.cachedFileNames = [
+            ...self.commandLine.fileNames,
+            self.probeFilePath,
+            self.probeFilePathPkg,
+          ];
         }
         return self.cachedFileNames;
       },
       getScriptVersion: (fileName) => {
-        if (fileName === self.probeFilePath) return String(self.probeVersion);
-        if (fileName === self.probeFilePathPkg) return String(self.probeVersionPkg);
+        if (fileName === self.probeFilePath) {
+          return String(self.probeVersion);
+        }
+        if (fileName === self.probeFilePathPkg) {
+          return String(self.probeVersionPkg);
+        }
         // Volar pattern (createProject.ts:377-378): return '' for non-existent files
-        if (!self.typescript.sys.fileExists(fileName)) return '';
+        if (!self.typescript.sys.fileExists(fileName)) {
+          return '';
+        }
         // Volar pattern: return mtime only. projectVersion is NOT included —
         // it controls whether the LS re-syncs (via getProjectVersion), not
         // whether individual files changed. Including it would make the LS
@@ -122,16 +128,16 @@ export class PropExtractionProject {
         // Volar pattern: mtime-based snapshot cache (shared across projects)
         const mtime = self.typescript.sys.getModifiedTime?.(fileName)?.valueOf();
         const cached = self.sharedSnapshots.get(fileName);
-        if (cached && cached[0] === mtime) return cached[1];
+        if (cached && cached[0] === mtime) {
+          return cached[1];
+        }
 
         // Volar pattern (createChecker.ts lines 120-139):
         // Read from disk, cache with mtime, handle missing files
         if (self.typescript.sys.fileExists(fileName)) {
           const content = self.typescript.sys.readFile(fileName);
           const snapshot =
-            content !== undefined
-              ? self.typescript.ScriptSnapshot.fromString(content)
-              : undefined;
+            content !== undefined ? self.typescript.ScriptSnapshot.fromString(content) : undefined;
           self.sharedSnapshots.set(fileName, [mtime, snapshot]);
           return snapshot;
         } else {
@@ -143,11 +149,17 @@ export class PropExtractionProject {
       getCurrentDirectory: () => projectRoot,
       getDefaultLibFileName: self.typescript.getDefaultLibFilePath,
       fileExists: (f) =>
-        f === self.probeFilePath || f === self.probeFilePathPkg || self.typescript.sys.fileExists(f),
+        f === self.probeFilePath ||
+        f === self.probeFilePathPkg ||
+        self.typescript.sys.fileExists(f),
       // Volar pattern: route readFile through snapshot cache for consistency
       readFile: (f) => {
-        if (f === self.probeFilePath) return self.probeContent;
-        if (f === self.probeFilePathPkg) return self.probeContentPkg;
+        if (f === self.probeFilePath) {
+          return self.probeContent;
+        }
+        if (f === self.probeFilePathPkg) {
+          return self.probeContentPkg;
+        }
         const snapshot = host.getScriptSnapshot!(f);
         return snapshot ? snapshot.getText(0, snapshot.getLength()) : undefined;
       },
@@ -163,10 +175,9 @@ export class PropExtractionProject {
   /**
    * Bump projectVersion to trigger LS re-sync.
    *
-   * Volar equivalent: file watcher fires → projectVersion++.
-   * Forces the LS to re-check getScriptVersion() (mtime) for every file
-   * on the next getProgram() call. If no mtimes changed, the LS returns
-   * the cached Program instantly. No application-level cache needed.
+   * Volar equivalent: file watcher fires → projectVersion++. Forces the LS to re-check
+   * getScriptVersion() (mtime) for every file on the next getProgram() call. If no mtimes changed,
+   * the LS returns the cached Program instantly. No application-level cache needed.
    */
   invalidate(): void {
     this.projectVersion++;
@@ -175,8 +186,8 @@ export class PropExtractionProject {
   /**
    * Dynamically add a file to the project's file list.
    *
-   * Volar pattern (typescriptProjectLs.ts lines 196-200):
-   * Used for inferred projects and files not in tsconfig's include.
+   * Volar pattern (typescriptProjectLs.ts lines 196-200): Used for inferred projects and files not
+   * in tsconfig's include.
    */
   tryAddFile(fileName: string): void {
     const normalized = fileName.replace(/\\/g, '/');
@@ -191,17 +202,20 @@ export class PropExtractionProject {
   /**
    * Lazy root files re-check.
    *
-   * Volar pattern (createChecker.ts lines 436-447):
-   * Only re-evaluates the tsconfig when shouldCheckRootFiles is set
-   * (after file creation or deletion). Compares old and new fileNames
+   * Volar pattern (createChecker.ts lines 436-447): Only re-evaluates the tsconfig when
+   * shouldCheckRootFiles is set (after file creation or deletion). Compares old and new fileNames
    * to avoid unnecessary projectVersion bumps.
    */
   private checkRootFilesUpdate(): void {
-    if (!this.shouldCheckRootFiles) return;
+    if (!this.shouldCheckRootFiles) {
+      return;
+    }
     this.shouldCheckRootFiles = false;
 
     // Only re-parse for configured projects (with a tsconfig)
-    if (!this.configPath) return;
+    if (!this.configPath) {
+      return;
+    }
 
     try {
       const config = this.typescript.readJsonConfigFile(
@@ -217,9 +231,7 @@ export class PropExtractionProject {
       );
       // Volar patch: outDir = undefined
       newCommandLine.options.outDir = undefined;
-      newCommandLine.fileNames = newCommandLine.fileNames.map((f) =>
-        f.replace(/\\/g, '/')
-      );
+      newCommandLine.fileNames = newCommandLine.fileNames.map((f) => f.replace(/\\/g, '/'));
 
       if (!arrayItemsEqual(newCommandLine.fileNames, this.commandLine.fileNames)) {
         this.commandLine.fileNames = newCommandLine.fileNames;
@@ -233,8 +245,8 @@ export class PropExtractionProject {
   }
 
   /**
-   * Extract component documentation from a single file.
-   * Delegates to extractDocsBulk with a single-element array.
+   * Extract component documentation from a single file. Delegates to extractDocsBulk with a
+   * single-element array.
    */
   extractDocs(filePath: string): ComponentDoc[] {
     return this.extractDocsBulk([filePath]).get(filePath) ?? [];
@@ -243,14 +255,13 @@ export class PropExtractionProject {
   /**
    * Bulk-extract component docs for multiple files in one pass.
    *
-   * Volar pattern: one probe + one getProgram() call for ALL files.
-   * This avoids N LS re-syncs (each checking getScriptVersion for every
-   * project file). Instead: one sync, one type-check, extract all.
+   * Volar pattern: one probe + one getProgram() call for ALL files. This avoids N LS re-syncs (each
+   * checking getScriptVersion for every project file). Instead: one sync, one type-check, extract
+   * all.
    *
-   * Invalidation follows Volar's model: projectVersion is bumped once
-   * per cycle (via getProjectVersion → checkRootFilesUpdate). The LS
-   * detects mtime changes in getScriptVersion and recompiles only what
-   * changed. No application-level mtime scanning needed — the LS handles it.
+   * Invalidation follows Volar's model: projectVersion is bumped once per cycle (via
+   * getProjectVersion → checkRootFilesUpdate). The LS detects mtime changes in getScriptVersion and
+   * recompiles only what changed. No application-level mtime scanning needed — the LS handles it.
    */
   /** Debug timings from the last extractDocsBulk call. */
   lastBulkDebug: Record<string, unknown> = {};
@@ -277,7 +288,9 @@ export class PropExtractionProject {
       const probeDir = path.dirname(this.probeFilePath);
       let relativePath = path.relative(probeDir, filePath);
       relativePath = relativePath.replace(/\.(tsx?|jsx?)$/, '');
-      if (!relativePath.startsWith('.')) relativePath = './' + relativePath;
+      if (!relativePath.startsWith('.')) {
+        relativePath = './' + relativePath;
+      }
       relativePath = relativePath.replace(/\\/g, '/');
 
       fileEntries.push({ filePath, relativePath, candidates });
@@ -356,10 +369,11 @@ export class PropExtractionProject {
   }
 
   /**
-   * Generate a single probe source that imports from ALL files.
-   * Uses file index prefix to avoid name collisions.
+   * Generate a single probe source that imports from ALL files. Uses file index prefix to avoid
+   * name collisions.
    *
    * Hybrid approach per candidate:
+   *
    * 1. Conditional type for detection (JSXElementConstructor check)
    * 2. JSX element for props extraction (getResolvedSignature)
    */
@@ -390,7 +404,9 @@ export class PropExtractionProject {
 
       // Build import with prefixed names to avoid collisions
       const parts: string[] = [];
-      if (hasDefault) parts.push(`${prefix}Default`);
+      if (hasDefault) {
+        parts.push(`${prefix}Default`);
+      }
       if (named.length > 0) {
         parts.push(
           `{ ${named.map((c) => `${c.exportName} as ${prefix}${c.exportName}`).join(', ')} }`
@@ -433,16 +449,17 @@ export class PropExtractionProject {
   /**
    * Get export candidates from a source file.
    *
-   * First tries lightweight AST-only detection (no checker needed).
-   * Falls back to checker-based detection when the file contains
-   * `export *` re-exports (barrel files) — these can't be resolved
+   * First tries lightweight AST-only detection (no checker needed). Falls back to checker-based
+   * detection when the file contains `export *` re-exports (barrel files) — these can't be resolved
    * without TypeScript's module resolution.
    */
   private getCandidatesFromSource(
     filePath: string
   ): Array<{ exportName: string; isDefault: boolean }> {
     const content = this.typescript.sys.readFile(filePath);
-    if (!content) return [];
+    if (!content) {
+      return [];
+    }
 
     const sf = this.typescript.createSourceFile(
       filePath,
@@ -499,31 +516,37 @@ export class PropExtractionProject {
   /**
    * Checker-based candidate extraction — fallback for barrel files.
    *
-   * Uses checker.getExportsOfModule() to resolve `export *` re-exports.
-   * More expensive than AST-only detection but handles all export patterns.
+   * Uses checker.getExportsOfModule() to resolve `export *` re-exports. More expensive than
+   * AST-only detection but handles all export patterns.
    */
   private getCandidatesFromChecker(
     filePath: string
   ): Array<{ exportName: string; isDefault: boolean }> {
     const program = this.ls.getProgram();
-    if (!program) return [];
+    if (!program) {
+      return [];
+    }
 
     const checker = program.getTypeChecker();
     const sourceFile = program.getSourceFile(filePath);
-    if (!sourceFile) return [];
+    if (!sourceFile) {
+      return [];
+    }
 
     const moduleSymbol = checker.getSymbolAtLocation(sourceFile);
-    if (!moduleSymbol) return [];
+    if (!moduleSymbol) {
+      return [];
+    }
 
     const exports = checker.getExportsOfModule(moduleSymbol);
     return exports
       .filter((exp) => {
         const name = exp.getName();
-        if (name !== 'default' && !/^[A-Z]/.test(name)) return false;
+        if (name !== 'default' && !/^[A-Z]/.test(name)) {
+          return false;
+        }
         const resolved =
-          exp.flags & this.typescript.SymbolFlags.Alias
-            ? checker.getAliasedSymbol(exp)
-            : exp;
+          exp.flags & this.typescript.SymbolFlags.Alias ? checker.getAliasedSymbol(exp) : exp;
         return !!resolved.valueDeclaration;
       })
       .map((exp) => ({
@@ -535,14 +558,11 @@ export class PropExtractionProject {
   /**
    * Extract a single component's props by import specifier.
    *
-   * Used for package imports (e.g. 'flowbite-react') where the resolved file
-   * may be compiled JS. The probe imports directly from the specifier, letting
-   * TypeScript resolve via tsconfig paths or node_modules .d.ts files.
+   * Used for package imports (e.g. 'flowbite-react') where the resolved file may be compiled JS.
+   * The probe imports directly from the specifier, letting TypeScript resolve via tsconfig paths or
+   * node_modules .d.ts files.
    */
-  extractDocByImport(
-    importSpecifier: string,
-    exportName: string
-  ): ComponentDoc | undefined {
+  extractDocByImport(importSpecifier: string, exportName: string): ComponentDoc | undefined {
     const results = this.extractDocsByImportBulk([{ importSpecifier, exportName }]);
     return results.get(`${importSpecifier}::${exportName}`);
   }
@@ -550,18 +570,27 @@ export class PropExtractionProject {
   /**
    * Bulk-extract component docs for multiple package imports in one probe.
    *
-   * Groups all exports by import specifier, builds ONE mega-probe, and
-   * calls getProgram() once. Same pattern as extractDocsBulk but for
-   * package imports instead of local files.
+   * Groups all exports by import specifier, builds ONE mega-probe, and calls getProgram() once.
+   * Same pattern as extractDocsBulk but for package imports instead of local files.
    */
   extractDocsByImportBulk(
-    entries: Array<{ importSpecifier: string; exportName: string; memberAccess?: string; componentPath?: string }>
+    entries: Array<{
+      importSpecifier: string;
+      exportName: string;
+      memberAccess?: string;
+      componentPath?: string;
+    }>
   ): Map<string, ComponentDoc> {
     const results = new Map<string, ComponentDoc>();
-    if (entries.length === 0) return results;
+    if (entries.length === 0) {
+      return results;
+    }
 
     // Group by specifier for combined imports, preserving memberAccess
-    const bySpecifier = new Map<string, Array<{ exportName: string; isDefault: boolean; memberAccess?: string }>>();
+    const bySpecifier = new Map<
+      string,
+      Array<{ exportName: string; isDefault: boolean; memberAccess?: string }>
+    >();
     for (const { importSpecifier, exportName, memberAccess } of entries) {
       let group = bySpecifier.get(importSpecifier);
       if (!group) {
@@ -590,7 +619,9 @@ export class PropExtractionProject {
       const named = candidates.filter((c) => !c.isDefault);
 
       const parts: string[] = [];
-      if (hasDefault) parts.push(`${prefix}Default`);
+      if (hasDefault) {
+        parts.push(`${prefix}Default`);
+      }
       if (named.length > 0) {
         parts.push(
           `{ ${named.map((c) => `${c.exportName} as ${prefix}${c.exportName}`).join(', ')} }`
@@ -645,14 +676,24 @@ export class PropExtractionProject {
     }
 
     const program = this.ls.getProgram();
-    if (!program) return results;
+    if (!program) {
+      return results;
+    }
 
     const checker = program.getTypeChecker();
     const probeSF = program.getSourceFile(this.probeFilePathPkg);
-    if (!probeSF) return results;
+    if (!probeSF) {
+      return results;
+    }
 
     // Resolve props: conditional types filter non-components, JSX extracts props.
-    const allPropsTypes = resolveProbeTypes(this.typescript, checker, probeSF, varNameMap, detTypeMap);
+    const allPropsTypes = resolveProbeTypes(
+      this.typescript,
+      checker,
+      probeSF,
+      varNameMap,
+      detTypeMap
+    );
 
     // Fallback: for entries where the probe failed (e.g. no memberAccess was provided
     // and the import is a namespace), inspect the type's properties to find component-like
@@ -671,7 +712,9 @@ export class PropExtractionProject {
     for (const { importSpecifier, exportName } of entries) {
       const mapKey = `${importSpecifier}::${exportName}`;
       const propsType = allPropsTypes.get(mapKey);
-      if (!propsType) continue;
+      if (!propsType) {
+        continue;
+      }
 
       // Resolve import to find the actual source file
       const resolved = this.typescript.resolveModuleName(
@@ -681,15 +724,21 @@ export class PropExtractionProject {
         this.typescript.sys
       );
       const resolvedFileName = resolved.resolvedModule?.resolvedFileName;
-      if (!resolvedFileName) continue;
+      if (!resolvedFileName) {
+        continue;
+      }
 
       const sourceFile = program.getSourceFile(resolvedFileName);
-      if (!sourceFile) continue;
+      if (!sourceFile) {
+        continue;
+      }
 
       // When TypeScript resolves to a .d.ts file (e.g. package imports in monorepos),
       // pass the original source path so extractFromProbe can extract defaults from it.
       const defaultsSourcePath =
-        resolvedFileName.endsWith('.d.ts') || resolvedFileName.endsWith('.d.mts') || resolvedFileName.endsWith('.d.cts')
+        resolvedFileName.endsWith('.d.ts') ||
+        resolvedFileName.endsWith('.d.mts') ||
+        resolvedFileName.endsWith('.d.cts')
           ? componentPaths.get(mapKey)
           : undefined;
 
@@ -704,7 +753,9 @@ export class PropExtractionProject {
       );
 
       const doc = docs.find((d) => d.exportName === exportName);
-      if (doc) results.set(mapKey, doc);
+      if (doc) {
+        results.set(mapKey, doc);
+      }
     }
 
     return results;
@@ -713,13 +764,13 @@ export class PropExtractionProject {
   /**
    * Compound component detection.
    *
-   * For entries where JSX resolution returned nothing (the imported symbol is
-   * a namespace object like `Accordion` with `.Root`, `.Item`, etc.), inspects
-   * the type's properties to find component-like ones.
+   * For entries where JSX resolution returned nothing (the imported symbol is a namespace object
+   * like `Accordion` with `.Root`, `.Item`, etc.), inspects the type's properties to find
+   * component-like ones.
    *
-   * A property is component-like if it has call signatures (function component)
-   * or construct signatures (class component). We pick the first one whose
-   * first parameter resolves to a non-`any` props type.
+   * A property is component-like if it has call signatures (function component) or construct
+   * signatures (class component). We pick the first one whose first parameter resolves to a
+   * non-`any` props type.
    *
    * Mutates `allPropsTypes` in place — adds resolved props for compound entries.
    */
@@ -732,7 +783,9 @@ export class PropExtractionProject {
   ): void {
     // Build a set of mapKeys that already have results
     const resolved = new Set<string>();
-    for (const key of allPropsTypes.keys()) resolved.add(key);
+    for (const key of allPropsTypes.keys()) {
+      resolved.add(key);
+    }
 
     // Build a map: prefixed identifier name → mapKey
     // e.g. "_p0_Accordion" → "@park-ui/react::Accordion"
@@ -750,7 +803,8 @@ export class PropExtractionProject {
     for (const [specifier, candidates] of bySpecifier) {
       const prefix = `_p${idx}_`;
       for (const c of candidates) {
-        const identName = c.exportName === 'default' ? `${prefix}Default` : `${prefix}${c.exportName}`;
+        const identName =
+          c.exportName === 'default' ? `${prefix}Default` : `${prefix}${c.exportName}`;
         const mapKey = `${specifier}::${c.exportName}`;
         if (!resolved.has(mapKey)) {
           identToMapKey.set(identName, mapKey);
@@ -759,14 +813,20 @@ export class PropExtractionProject {
       idx++;
     }
 
-    if (identToMapKey.size === 0) return;
+    if (identToMapKey.size === 0) {
+      return;
+    }
 
     // Walk the probe AST to find import bindings for unresolved entries
     for (const stmt of probeSF.statements) {
-      if (!this.typescript.isImportDeclaration(stmt)) continue;
+      if (!this.typescript.isImportDeclaration(stmt)) {
+        continue;
+      }
 
       const clause = stmt.importClause;
-      if (!clause) continue;
+      if (!clause) {
+        continue;
+      }
 
       // Check default import
       if (clause.name) {
@@ -785,9 +845,8 @@ export class PropExtractionProject {
   /**
    * Try to resolve a compound component from an imported identifier.
    *
-   * Gets the type of the identifier, enumerates its properties, and finds
-   * the first one that's a component (has call/construct signatures with a
-   * non-`any` first parameter).
+   * Gets the type of the identifier, enumerates its properties, and finds the first one that's a
+   * component (has call/construct signatures with a non-`any` first parameter).
    */
   private tryResolveCompound(
     checker: ts.TypeChecker,
@@ -797,10 +856,14 @@ export class PropExtractionProject {
   ): void {
     const name = ident.text;
     const mapKey = identToMapKey.get(name);
-    if (!mapKey) return;
+    if (!mapKey) {
+      return;
+    }
 
     const sym = checker.getSymbolAtLocation(ident);
-    if (!sym) return;
+    if (!sym) {
+      return;
+    }
 
     const type = checker.getTypeOfSymbolAtLocation(sym, ident);
     const properties = checker.getPropertiesOfType(type);
@@ -812,21 +875,29 @@ export class PropExtractionProject {
     for (const prop of properties) {
       const propType = checker.getTypeOfSymbolAtLocation(prop, ident);
       const callSigs = checker.getSignaturesOfType(propType, this.typescript.SignatureKind.Call);
-      if (callSigs.length === 0) continue;
+      if (callSigs.length === 0) {
+        continue;
+      }
 
       const sig = callSigs[0];
       const params = sig.getParameters();
-      if (params.length === 0) continue;
+      if (params.length === 0) {
+        continue;
+      }
 
       const propsType = checker.getTypeOfSymbolAtLocation(params[0], ident);
-      if (propsType.flags & this.typescript.TypeFlags.Any) continue;
+      if (propsType.flags & this.typescript.TypeFlags.Any) {
+        continue;
+      }
 
       if (prop.getName() === 'Root') {
         // Perfect match — use it immediately
         allPropsTypes.set(mapKey, propsType);
         return;
       }
-      if (!bestProp) bestProp = prop;
+      if (!bestProp) {
+        bestProp = prop;
+      }
     }
 
     // Use first component-like property as fallback
@@ -846,9 +917,8 @@ export class PropExtractionProject {
   /**
    * Check if a file is in this project's TypeScript program.
    *
-   * Volar's findIndirectReferenceTsconfig pattern:
-   * Uses program.getSourceFile() to check for transitively included files
-   * (imported but not necessarily in the tsconfig's include list).
+   * Volar's findIndirectReferenceTsconfig pattern: Uses program.getSourceFile() to check for
+   * transitively included files (imported but not necessarily in the tsconfig's include list).
    */
   hasSourceFile(filePath: string): boolean {
     return !!this.ls.getProgram()?.getSourceFile(filePath);
@@ -857,8 +927,8 @@ export class PropExtractionProject {
   /**
    * Notify that a file has changed on disk.
    *
-   * Volar pattern (createChecker.ts lines 409-431):
-   * Smart version bumping based on change type:
+   * Volar pattern (createChecker.ts lines 409-431): Smart version bumping based on change type:
+   *
    * - 'changed': only bump if the file is in the current program
    * - 'created': flag shouldCheckRootFiles (new files may match tsconfig include)
    * - 'deleted': bump if in program + flag shouldCheckRootFiles
@@ -892,14 +962,16 @@ export class PropExtractionProject {
   }
 }
 
-/**
- * Compare two arrays for set equality (Volar's arrayItemsEqual pattern).
- */
+/** Compare two arrays for set equality (Volar's arrayItemsEqual pattern). */
 function arrayItemsEqual(a: string[], b: string[]): boolean {
-  if (a.length !== b.length) return false;
+  if (a.length !== b.length) {
+    return false;
+  }
   const set = new Set(a);
   for (const file of b) {
-    if (!set.has(file)) return false;
+    if (!set.has(file)) {
+      return false;
+    }
   }
   return true;
 }
@@ -911,28 +983,21 @@ function arrayItemsEqual(a: string[], b: string[]): boolean {
 function hasExportModifier(typescript: typeof ts, node: ts.Statement): boolean {
   return (
     typescript.canHaveModifiers(node) &&
-    !!typescript.getModifiers(node)?.some(
-      (m) => m.kind === typescript.SyntaxKind.ExportKeyword
-    )
+    !!typescript.getModifiers(node)?.some((m) => m.kind === typescript.SyntaxKind.ExportKeyword)
   );
 }
 
 function hasDefaultModifier(typescript: typeof ts, node: ts.Statement): boolean {
   return (
     typescript.canHaveModifiers(node) &&
-    !!typescript.getModifiers(node)?.some(
-      (m) => m.kind === typescript.SyntaxKind.DefaultKeyword
-    )
+    !!typescript.getModifiers(node)?.some((m) => m.kind === typescript.SyntaxKind.DefaultKeyword)
   );
 }
 
 function getDeclarationName(typescript: typeof ts, node: ts.Statement): string | undefined {
   // Only value-level declarations can be React components.
   // Interfaces, type aliases, and enums are type-only — skip them.
-  if (
-    typescript.isFunctionDeclaration(node) ||
-    typescript.isClassDeclaration(node)
-  ) {
+  if (typescript.isFunctionDeclaration(node) || typescript.isClassDeclaration(node)) {
     return node.name?.text;
   }
   if (typescript.isVariableStatement(node)) {
