@@ -1753,13 +1753,23 @@ describe('propExtractor', () => {
       `);
 
       const { props } = docs[0];
-      // Base props present in all variants
+      // Base props present in all variants — optional in both
       expect(props.min).toBeDefined();
       expect(props.max).toBeDefined();
       expect(props.step).toBeDefined();
+      expect(props.min.required).toBe(false);
+
       // Union-specific props — must be collected from all variants
       expect(props.value).toBeDefined();
       expect(props.defaultValue).toBeDefined();
+
+      // Types should be `number`, not `undefined` (must pick the non-never variant)
+      expect(props.value.type.name).toBe('number');
+      expect(props.defaultValue.type.name).toBe('number');
+
+      // Required should be false — each prop is `never` in one variant, so not always needed
+      expect(props.value.required).toBe(false);
+      expect(props.defaultValue.required).toBe(false);
     });
   });
 });

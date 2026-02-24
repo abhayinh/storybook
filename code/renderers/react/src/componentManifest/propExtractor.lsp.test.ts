@@ -1790,11 +1790,23 @@ describe('propExtractor (LSP)', () => {
 
     it('collects all props from discriminated union (Reshaped Slider pattern)', () => {
       const { props } = docs('extract/discriminated_union.tsx')[0];
+      // Base props present in all variants
       expect(props.min).toBeDefined();
       expect(props.max).toBeDefined();
       expect(props.step).toBeDefined();
+      expect(props.min.required).toBe(false);
+
+      // Union-specific props — collected from all variants
       expect(props.value).toBeDefined();
       expect(props.defaultValue).toBeDefined();
+
+      // Types should be `number`, not `undefined` (must pick non-never variant)
+      expect(props.value.type.name).toBe('number');
+      expect(props.defaultValue.type.name).toBe('number');
+
+      // Required should be false — each prop is `never` in one variant
+      expect(props.value.required).toBe(false);
+      expect(props.defaultValue.required).toBe(false);
     });
   });
 });

@@ -1149,30 +1149,73 @@ export function extractFromProbe(
 
     const resolved = exp.flags & typescript.SymbolFlags.Alias ? checker.getAliasedSymbol(exp) : exp;
 
-    // getApparentProperties() on a union type only returns common members.
-    // For discriminated unions (e.g. Reshaped Slider: ControlledProps | UncontrolledProps),
-    // variant-specific props like `value`, `defaultValue` would be lost.
-    // Collect all properties across all union members, deduplicating by name.
-    let allProperties: ts.Symbol[];
-    if (propsType.isUnion()) {
-      const seen = new Map<string, ts.Symbol>();
-      for (const member of (propsType as ts.UnionType).types) {
-        for (const prop of member.getApparentProperties()) {
-          if (!seen.has(prop.getName())) {
-            seen.set(prop.getName(), prop);
-          }
-        }
-      }
-      allProperties = Array.from(seen.values());
-    } else {
-      allProperties = propsType.getApparentProperties();
-    }
-    const excluded = getBulkSourceExclusions(allProperties);
-
     const contextNode = resolved.valueDeclaration ?? resolved.getDeclarations()?.[0];
     if (!contextNode) {
       continue;
     }
+
+    // getApparentProperties() on a union type only returns common members.
+    // For discriminated unions (e.g. Reshaped Slider: ControlledProps | UncontrolledProps),
+    // variant-specific props like `value`, `defaultValue` would be lost.
+    // Collect all properties across all union members, deduplicating by name.
+    // When deduplicating, prefer symbols with real types (e.g. `value: number` over
+    // `value?: never` which resolves to `undefined`). Props that are degraded or
+    // optional in any variant are force-optional since the caller doesn't always need them.
+    let allProperties: ts.Symbol[];
+    let unionForceOptional: Set<string> | undefined;
+    if (propsType.isUnion()) {
+      const seen = new Map<string, ts.Symbol>();
+      const forceOptional = new Set<string>();
+      const unionMembers = (propsType as ts.UnionType).types;
+
+      for (const member of unionMembers) {
+        const memberPropNames = new Set<string>();
+        for (const prop of member.getApparentProperties()) {
+          const name = prop.getName();
+          memberPropNames.add(name);
+
+          const propType = checker.getTypeOfSymbolAtLocation(prop, contextNode);
+          const isOptional = !!(prop.flags & typescript.SymbolFlags.Optional);
+          // `value?: never` resolves to type `undefined` (Never + Optional → Undefined).
+          // Detect these "degraded" props so we can prefer the real variant.
+          const isDegraded =
+            !!(propType.getFlags() & typescript.TypeFlags.Never) ||
+            (propType.getFlags() === typescript.TypeFlags.Undefined);
+
+          // Props with degraded type or optional in any variant → force optional
+          if (isOptional || isDegraded) {
+            forceOptional.add(name);
+          }
+
+          const existing = seen.get(name);
+          if (!existing) {
+            seen.set(name, prop);
+          } else if (!isDegraded) {
+            // Replace if existing is degraded but this one isn't
+            const existingType = checker.getTypeOfSymbolAtLocation(existing, contextNode);
+            const existingIsDegraded =
+              !!(existingType.getFlags() & typescript.TypeFlags.Never) ||
+              (existingType.getFlags() === typescript.TypeFlags.Undefined);
+            if (existingIsDegraded) {
+              seen.set(name, prop);
+            }
+          }
+        }
+
+        // Props not in this member → force optional
+        for (const name of seen.keys()) {
+          if (!memberPropNames.has(name)) {
+            forceOptional.add(name);
+          }
+        }
+      }
+
+      allProperties = Array.from(seen.values());
+      unionForceOptional = forceOptional;
+    } else {
+      allProperties = propsType.getApparentProperties();
+    }
+    const excluded = getBulkSourceExclusions(allProperties);
 
     // Collect defaults: destructuring > defaultProps > JSDoc (in extractPropItem)
     const defaultsMap = extractDestructuringDefaults(typescript, resolved, checker);
@@ -1204,7 +1247,11 @@ export function extractFromProbe(
       if (excluded.has(prop.getName())) {
         continue;
       }
-      props[prop.getName()] = extractPropItem(typescript, checker, prop, contextNode, defaultsMap);
+      const item = extractPropItem(typescript, checker, prop, contextNode, defaultsMap);
+      if (unionForceOptional?.has(prop.getName())) {
+        item.required = false;
+      }
+      props[prop.getName()] = item;
     }
 
     const displayName = computeDisplayName(exp, resolved, sourceFile);
