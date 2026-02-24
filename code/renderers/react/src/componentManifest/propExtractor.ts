@@ -1149,7 +1149,24 @@ export function extractFromProbe(
 
     const resolved = exp.flags & typescript.SymbolFlags.Alias ? checker.getAliasedSymbol(exp) : exp;
 
-    const allProperties = propsType.getApparentProperties();
+    // getApparentProperties() on a union type only returns common members.
+    // For discriminated unions (e.g. Reshaped Slider: ControlledProps | UncontrolledProps),
+    // variant-specific props like `value`, `defaultValue` would be lost.
+    // Collect all properties across all union members, deduplicating by name.
+    let allProperties: ts.Symbol[];
+    if (propsType.isUnion()) {
+      const seen = new Map<string, ts.Symbol>();
+      for (const member of (propsType as ts.UnionType).types) {
+        for (const prop of member.getApparentProperties()) {
+          if (!seen.has(prop.getName())) {
+            seen.set(prop.getName(), prop);
+          }
+        }
+      }
+      allProperties = Array.from(seen.values());
+    } else {
+      allProperties = propsType.getApparentProperties();
+    }
     const excluded = getBulkSourceExclusions(allProperties);
 
     const contextNode = resolved.valueDeclaration ?? resolved.getDeclarations()?.[0];

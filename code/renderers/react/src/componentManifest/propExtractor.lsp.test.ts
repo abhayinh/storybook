@@ -678,6 +678,29 @@ const TEST_FILES: Record<string, string> = {
     }
     export const NumberList = (props: ListProps<number>) => <ul />;
   `,
+  'extract/discriminated_union.tsx': `
+    import React from 'react';
+
+    type ControlledProps = {
+      value: number;
+      defaultValue?: never;
+    };
+
+    type UncontrolledProps = {
+      value?: never;
+      defaultValue?: number;
+    };
+
+    type BaseProps = {
+      min?: number;
+      max?: number;
+      step?: number;
+    };
+
+    type Props = BaseProps & (ControlledProps | UncontrolledProps);
+
+    export const Slider: React.FC<Props> = (props) => <div />;
+  `,
 
   // =========================================================================
   // QA: Park UI — ForwardRefExoticComponent from HOC factory
@@ -1763,6 +1786,15 @@ describe('propExtractor (LSP)', () => {
       const { props } = docs('extract/flat_generic.tsx')[0];
       expect(props.items.type.name).toBe('number[]');
       expect(props.selected.type.name).toBe('number');
+    });
+
+    it('collects all props from discriminated union (Reshaped Slider pattern)', () => {
+      const { props } = docs('extract/discriminated_union.tsx')[0];
+      expect(props.min).toBeDefined();
+      expect(props.max).toBeDefined();
+      expect(props.step).toBeDefined();
+      expect(props.value).toBeDefined();
+      expect(props.defaultValue).toBeDefined();
     });
   });
 });

@@ -1726,6 +1726,41 @@ describe('propExtractor', () => {
       expect(props.items.type.name).toBe('number[]');
       expect(props.selected.type.name).toBe('number');
     });
+
+    it('collects all props from discriminated union (Reshaped Slider pattern)', () => {
+      const docs = extractSingle(`
+        import React from 'react';
+
+        type ControlledProps = {
+          value: number;
+          defaultValue?: never;
+        };
+
+        type UncontrolledProps = {
+          value?: never;
+          defaultValue?: number;
+        };
+
+        type BaseProps = {
+          min?: number;
+          max?: number;
+          step?: number;
+        };
+
+        type Props = BaseProps & (ControlledProps | UncontrolledProps);
+
+        export const Slider: React.FC<Props> = (props) => <div />;
+      `);
+
+      const { props } = docs[0];
+      // Base props present in all variants
+      expect(props.min).toBeDefined();
+      expect(props.max).toBeDefined();
+      expect(props.step).toBeDefined();
+      // Union-specific props — must be collected from all variants
+      expect(props.value).toBeDefined();
+      expect(props.defaultValue).toBeDefined();
+    });
   });
 });
 
