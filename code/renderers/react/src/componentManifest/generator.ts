@@ -37,6 +37,10 @@ interface ReactComponentManifest extends ComponentManifest {
 // ---------------------------------------------------------------------------
 // Lazy singleton PropExtractionManager — survives across dev requests,
 // dies on build process exit. TypeScript is an optional peer dep.
+//
+// startWatching() is called immediately so the manager stays in sync with
+// disk changes via fs.watch events (Volar Checker pattern). This replaces
+// the old invalidate()-per-request sledgehammer with surgical per-file events.
 // ---------------------------------------------------------------------------
 
 let propTypesManagerPromise: Promise<PropExtractionManager | null> | undefined;
@@ -46,7 +50,9 @@ function getPropTypesManager(): Promise<PropExtractionManager | null> {
     propTypesManagerPromise = (async () => {
       try {
         const ts = await import('typescript');
-        return new PropExtractionManager(ts);
+        const manager = new PropExtractionManager(ts);
+        manager.startWatching([process.cwd()]);
+        return manager;
       } catch (error) {
         logger.debug('[reactPropTypes] TypeScript not available, skipping prop extraction');
         return null;
@@ -336,9 +342,9 @@ export const manifests: PresetPropertyFn<
   const manager = await managerWarmup;
   const propTypesDebug: Record<string, unknown> = {};
   if (manager) {
-    const t0 = performance.now();
-    manager.invalidate();
-    propTypesDebug.invalidateMs = Math.round(performance.now() - t0);
+    // No invalidate() needed — the manager's file watcher (startWatching) keeps
+    // projects incrementally up to date via onFileChanged/Created/Deleted events.
+    // The LS only recompiles files that actually changed since the last request.
 
     // Group local-file contexts by project for bulk extraction
     const localByProject = new Map<
