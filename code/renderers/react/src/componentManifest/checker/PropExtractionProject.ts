@@ -929,32 +929,42 @@ export class PropExtractionProject {
   /**
    * Batch notify file changes on disk.
    *
-   * Volar Checker pattern (createChecker.ts lines 409-432): Gets program ONCE before the loop,
-   * then selectively bumps version. Breaks after first created/deleted event — once
-   * shouldCheckRootFiles is set, subsequent changes are handled by the lazy re-parse.
+   * Volar LS pattern (typescriptProjectLs.ts lines 98-104): Process ALL changes in the batch,
+   * then bump projectVersion ONCE. No early break — all events contribute to the final state.
    *
-   * - Changed: only bump if file is in this project's program
-   * - Deleted: only bump if file was in program, flag for lazy re-parse, break
-   * - Created: flag for lazy re-parse only (no immediate version bump), break
+   * - Changed: invalidate snapshot cache, mark for version bump if file is in program
+   * - Created: invalidate snapshot cache, flag for lazy config re-parse
+   * - Deleted: invalidate snapshot cache, flag for lazy config re-parse, mark for version bump
+   *
+   * Snapshot cache is explicitly invalidated on event (Volar fileSystem.ts pattern) rather
+   * than relying solely on mtime-on-access, which can miss same-second edits.
    */
   onFilesChanged(changes: Array<{ filePath: string; type: 'changed' | 'created' | 'deleted' }>): void {
-    // Volar pattern: get program ONCE before the loop (createChecker.ts line 410-411)
     const program = this.ls.getProgram();
+    let needsVersionBump = false;
+
     for (const { filePath, type } of changes) {
+      // Volar fileSystem.ts pattern: explicitly invalidate snapshot cache on event.
+      // Ensures stale data is never served, even on filesystems with 1s mtime granularity.
+      this.sharedSnapshots.delete(filePath);
+
       if (type === 'changed') {
         if (program?.getSourceFile(filePath)) {
-          this.projectVersion++;
+          needsVersionBump = true;
         }
       } else if (type === 'deleted') {
         if (program?.getSourceFile(filePath)) {
-          this.projectVersion++;
-          this.shouldCheckRootFiles = true;
-          break;
+          needsVersionBump = true;
         }
+        this.shouldCheckRootFiles = true;
       } else if (type === 'created') {
         this.shouldCheckRootFiles = true;
-        break;
       }
+    }
+
+    // Volar LS pattern: bump projectVersion ONCE per batch, not per file.
+    if (needsVersionBump || this.shouldCheckRootFiles) {
+      this.projectVersion++;
     }
   }
 

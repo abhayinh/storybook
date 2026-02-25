@@ -408,9 +408,8 @@ export class PropExtractionManager {
   /**
    * Batch broadcast file changes to all projects.
    *
-   * Volar Checker pattern (createChecker.ts lines 409-432): Each project processes the full
-   * batch with a single getProgram() call, then breaks after the first created/deleted event.
-   * More efficient than per-file dispatch when multiple files change simultaneously.
+   * Volar LS pattern (typescriptProjectLs.ts lines 98-104): Each project processes all events,
+   * invalidates snapshot caches, and bumps projectVersion once per batch.
    */
   onFilesChanged(changes: Array<{ filePath: string; type: 'changed' | 'created' | 'deleted' }>) {
     for (const project of this.projects.values()) {
