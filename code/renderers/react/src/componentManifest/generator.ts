@@ -51,7 +51,7 @@ function getPropTypesManager(): Promise<PropExtractionManager | null> {
       try {
         const ts = await import('typescript');
         const manager = new PropExtractionManager(ts);
-        manager.startWatching([process.cwd()]);
+        manager.startWatching();
         return manager;
       } catch (error) {
         logger.debug('[reactPropTypes] TypeScript not available, skipping prop extraction');

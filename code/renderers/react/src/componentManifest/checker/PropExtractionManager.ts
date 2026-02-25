@@ -39,6 +39,8 @@ export class PropExtractionManager {
   /** Volar pattern (searchedDirs): avoid re-scanning directories for tsconfig files. */
   private searchedDirs = new Set<string>();
   private rootTsConfigs = new Set<string>();
+  /** Whether file watching is active. False in build mode, true in dev mode. */
+  private watching = false;
   /** Directories currently being watched by fs.watch. */
   private watchedDirs = new Set<string>();
   /** Active fs.watch instances — one per watched directory. */
@@ -459,12 +461,13 @@ export class PropExtractionManager {
    *
    * Additional directories are automatically watched when new projects are discovered via
    * tsconfig references (monorepo support — sibling packages get their own watchers).
+   *
+   * No initial directories needed — projects auto-watch their own directories when discovered
+   * via getOrCreateConfiguredProject(). TypeScript knows which directories matter.
    */
-  startWatching(directories: string[]): void {
+  startWatching(): void {
     this.stopWatching();
-    for (const dir of directories) {
-      this.watchDirectory(dir);
-    }
+    this.watching = true;
   }
 
   /**
@@ -473,6 +476,10 @@ export class PropExtractionManager {
    * tsconfig references — ensures monorepo sibling packages are watched too.
    */
   private watchDirectory(dir: string): void {
+    if (!this.watching) {
+      return;
+    }
+
     const normalized = dir.replace(/\\/g, '/');
 
     // Skip if this directory (or a parent) is already being watched
@@ -541,6 +548,7 @@ export class PropExtractionManager {
     }
     this.watchers.length = 0;
     this.watchedDirs.clear();
+    this.watching = false;
   }
 
   /**
