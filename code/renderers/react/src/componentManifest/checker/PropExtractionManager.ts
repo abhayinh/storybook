@@ -39,8 +39,12 @@ export class PropExtractionManager {
   /** Volar pattern (searchedDirs): avoid re-scanning directories for tsconfig files. */
   private searchedDirs = new Set<string>();
   private rootTsConfigs = new Set<string>();
-  /** Cleanup function for the active file watcher (if any). */
-  private stopWatching?: () => void;
+  /** Directories currently being watched by fs.watch. */
+  private watchedDirs = new Set<string>();
+  /** Active fs.watch instances — one per watched directory. */
+  private watchers: FSWatcher[] = [];
+  /** Debounce timers for pending file events. */
+  private pendingEvents = new Map<string, ReturnType<typeof setTimeout>>();
 
   /**
    * Shared snapshot cache across all projects.
@@ -311,6 +315,12 @@ export class PropExtractionManager {
         reloadCommandLine
       );
       this.projects.set(configPath, project);
+
+      // Auto-watch the project's directory if watching is active.
+      // This handles monorepos where project references point to sibling packages
+      // outside the initial cwd — each discovered project root gets its own watcher.
+      this.watchDirectory(path.dirname(configPath));
+
       return project;
     } catch {
       return null;
@@ -446,69 +456,91 @@ export class PropExtractionManager {
    *
    * When watching is active, invalidate() is no longer needed — individual file events keep
    * projects in sync incrementally, exactly like Volar in VS Code.
+   *
+   * Additional directories are automatically watched when new projects are discovered via
+   * tsconfig references (monorepo support — sibling packages get their own watchers).
    */
   startWatching(directories: string[]): void {
-    // Stop any existing watcher
-    this.stopWatching?.();
-
-    const watchers: FSWatcher[] = [];
-    const pending = new Map<string, ReturnType<typeof setTimeout>>();
-
+    this.stopWatching();
     for (const dir of directories) {
-      try {
-        const watcher = watch(dir, { recursive: true }, (eventType, filename) => {
-          if (!filename) {
-            return;
-          }
-          const filePath = path.resolve(dir, filename).replace(/\\/g, '/');
+      this.watchDirectory(dir);
+    }
+  }
 
-          // Skip irrelevant paths
-          if (filePath.includes('node_modules') || filePath.includes('.git')) {
-            return;
-          }
+  /**
+   * Watch a single directory recursively. Skips if already covered by an existing watcher
+   * (same dir or parent dir). Called automatically when new projects are discovered via
+   * tsconfig references — ensures monorepo sibling packages are watched too.
+   */
+  private watchDirectory(dir: string): void {
+    const normalized = dir.replace(/\\/g, '/');
 
-          // Debounce per file: fs.watch can fire multiple events for the same change.
-          // 50ms window — fast enough for responsiveness, long enough to coalesce duplicates.
-          const existing = pending.get(filePath);
-          if (existing) {
-            clearTimeout(existing);
-          }
-
-          pending.set(
-            filePath,
-            setTimeout(() => {
-              pending.delete(filePath);
-
-              if (eventType === 'rename') {
-                // 'rename' fires for both creation and deletion — check existence to distinguish
-                if (existsSync(filePath)) {
-                  this.handleFileEvent(filePath, 'created');
-                } else {
-                  this.handleFileEvent(filePath, 'deleted');
-                }
-              } else {
-                // 'change' = content modified
-                this.handleFileEvent(filePath, 'changed');
-              }
-            }, 50)
-          );
-        });
-        watchers.push(watcher);
-      } catch {
-        // Directory might not exist or recursive watching not supported
+    // Skip if this directory (or a parent) is already being watched
+    for (const watched of this.watchedDirs) {
+      if (normalized === watched || normalized.startsWith(watched + '/')) {
+        return;
       }
     }
 
-    this.stopWatching = () => {
-      for (const timeout of pending.values()) {
-        clearTimeout(timeout);
-      }
-      pending.clear();
-      for (const watcher of watchers) {
-        watcher.close();
-      }
-      watchers.length = 0;
-    };
+    this.watchedDirs.add(normalized);
+
+    try {
+      const watcher = watch(dir, { recursive: true }, (eventType, filename) => {
+        if (!filename) {
+          return;
+        }
+        const filePath = path.resolve(dir, filename).replace(/\\/g, '/');
+
+        // Skip irrelevant paths
+        if (filePath.includes('node_modules') || filePath.includes('.git')) {
+          return;
+        }
+
+        // Debounce per file: fs.watch can fire multiple events for the same change.
+        // 50ms window — fast enough for responsiveness, long enough to coalesce duplicates.
+        const existing = this.pendingEvents.get(filePath);
+        if (existing) {
+          clearTimeout(existing);
+        }
+
+        this.pendingEvents.set(
+          filePath,
+          setTimeout(() => {
+            this.pendingEvents.delete(filePath);
+
+            if (eventType === 'rename') {
+              // 'rename' fires for both creation and deletion — check existence to distinguish
+              if (existsSync(filePath)) {
+                this.handleFileEvent(filePath, 'created');
+              } else {
+                this.handleFileEvent(filePath, 'deleted');
+              }
+            } else {
+              // 'change' = content modified
+              this.handleFileEvent(filePath, 'changed');
+            }
+          }, 50)
+        );
+      });
+      this.watchers.push(watcher);
+    } catch {
+      // Directory might not exist or recursive watching not supported
+    }
+  }
+
+  /**
+   * Stop all active file watchers and clear pending events.
+   */
+  stopWatching(): void {
+    for (const timeout of this.pendingEvents.values()) {
+      clearTimeout(timeout);
+    }
+    this.pendingEvents.clear();
+    for (const watcher of this.watchers) {
+      watcher.close();
+    }
+    this.watchers.length = 0;
+    this.watchedDirs.clear();
   }
 
   /**
@@ -538,7 +570,7 @@ export class PropExtractionManager {
   }
 
   dispose() {
-    this.stopWatching?.();
+    this.stopWatching();
     for (const project of this.projects.values()) {
       project.dispose();
     }
