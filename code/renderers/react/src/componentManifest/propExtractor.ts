@@ -1,21 +1,24 @@
 /**
- * Prop extractor using React's own JSX type system for component detection.
+ * Prop extractor — resolves React component props via TypeScript's type checker.
  *
- * Component detection uses JSX elements in a virtual probe file:
+ * Two extraction paths:
  *
- * Export const **el_Button** = <Button />;
+ * **Path 1 (primary)**: `resolvePropsFromStoryFile()` — finds JSX elements in an existing story
+ * file that match the target component, then calls `checker.getResolvedSignature()` to extract
+ * the full props type. Works for ~95% of components (any story with JSX usage).
+ *
+ * **Path 2 (fallback)**: `resolvePropsFromComponentType()` — for args-only stories with no JSX,
+ * inspects the component's type directly via `getCallSignatures()[0].parameters[0]` (similar to
+ * Vue's component-meta approach). Does NOT work for polymorphic/generic components (TS #61133).
+ *
+ * Both paths produce a `ts.Type` which is then serialized into `ComponentDoc` format by
+ * `extractFromProbe()`, which creates a minimal virtual program to run the serialization logic.
  *
  * TypeScript resolves props the same way as autocompletion — by calling
  * `checker.getResolvedSignature()` on the JSX element. For polymorphic components with generic call
  * signatures (e.g. Mantine's polymorphicFactory), TypeScript instantiates the generic with its
- * default type parameter, giving the correct concrete props.
- *
- * This avoids the `ComponentProps<T>` / `infer P` limitation where TypeScript cannot infer P from a
- * generic call signature (TS #61133).
- *
- * React is the sole authority on what constitutes a component. No manual heuristics are layered on
- * top. Uppercase filtering mirrors how JSX itself distinguishes intrinsic elements (`<div>`) from
- * components (`<Button>`).
+ * default type parameter, giving the correct concrete props. This avoids the `ComponentProps<T>` /
+ * `infer P` limitation (TS #61133).
  */
 import type ts from 'typescript';
 
@@ -297,6 +300,281 @@ export function resolveProbeTypes(
 
   visit(probeSourceFile);
   return propsTypes;
+}
+
+// ---------------------------------------------------------------------------
+// Story-based prop extraction (probe-free)
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolves props type by finding JSX usage of the target component in a story file.
+ *
+ * Story files already contain JSX like `<Button />` that TypeScript has resolved.
+ * This function walks the story AST to find a JSX element matching the target component
+ * and extracts the props type via `getResolvedSignature()` — the same mechanism as
+ * autocomplete and the former probe approach.
+ *
+ * @param importSpecifier - The import specifier as written in the story file (e.g., './Button', '@mantine/core')
+ * @param importName - The export name of the component (e.g., 'Button', 'default')
+ * @param memberAccess - For compound components (e.g., 'Root' in `<Accordion.Root />`)
+ */
+export function resolvePropsFromStoryFile(
+  typescript: typeof ts,
+  checker: ts.TypeChecker,
+  storySourceFile: ts.SourceFile,
+  importSpecifier: string,
+  importName: string,
+  memberAccess?: string,
+): ts.Type | undefined {
+  // Step 1: Find the import binding symbol in the story file.
+  // This is the local symbol that the story uses in JSX (e.g., `Button` from `import { Button } from './Button'`).
+  let importSymbol: ts.Symbol | undefined;
+
+  for (const stmt of storySourceFile.statements) {
+    if (!typescript.isImportDeclaration(stmt)) {
+      continue;
+    }
+    const moduleSpec = stmt.moduleSpecifier;
+    if (!typescript.isStringLiteral(moduleSpec)) {
+      continue;
+    }
+    if (moduleSpec.text !== importSpecifier) {
+      continue;
+    }
+
+    const clause = stmt.importClause;
+    if (!clause) {
+      continue;
+    }
+
+    if (importName === 'default') {
+      // Default import: import Button from '...'
+      if (clause.name) {
+        importSymbol = checker.getSymbolAtLocation(clause.name);
+      }
+      // Also check named imports for `{ default as Button }` pattern
+      if (!importSymbol && clause.namedBindings && typescript.isNamedImports(clause.namedBindings)) {
+        for (const spec of clause.namedBindings.elements) {
+          const originalName = (spec.propertyName ?? spec.name).text;
+          if (originalName === 'default') {
+            importSymbol = checker.getSymbolAtLocation(spec.name);
+            break;
+          }
+        }
+      }
+    } else {
+      // Named import: import { Button } from '...' or import { Button as Btn } from '...'
+      if (clause.namedBindings && typescript.isNamedImports(clause.namedBindings)) {
+        for (const spec of clause.namedBindings.elements) {
+          const originalName = (spec.propertyName ?? spec.name).text;
+          if (originalName === importName) {
+            importSymbol = checker.getSymbolAtLocation(spec.name);
+            break;
+          }
+        }
+      }
+    }
+    if (importSymbol) {
+      break;
+    }
+  }
+
+  if (!importSymbol) {
+    return undefined;
+  }
+
+  // Step 2: Walk story file to find JSX elements using this import
+  let result: ts.Type | undefined;
+
+  function extractPropsFromJsx(
+    node: ts.JsxSelfClosingElement | ts.JsxOpeningElement,
+  ): ts.Type | undefined {
+    const sig = checker.getResolvedSignature(node);
+    if (!sig) {
+      return undefined;
+    }
+    const params = sig.getParameters();
+    if (params.length === 0) {
+      // Component with no props
+      return checker.getTypeFromTypeNode(typescript.factory.createTypeLiteralNode([]));
+    }
+    return checker.getTypeOfSymbolAtLocation(params[0], node);
+  }
+
+  function visit(node: ts.Node) {
+    if (result) {
+      return;
+    }
+
+    if (typescript.isJsxSelfClosingElement(node) || typescript.isJsxOpeningElement(node)) {
+      const tagName = node.tagName;
+
+      if (memberAccess) {
+        // Handle <Accordion.Root /> pattern
+        if (
+          typescript.isPropertyAccessExpression(tagName) &&
+          tagName.name.text === memberAccess
+        ) {
+          const leftSym = checker.getSymbolAtLocation(tagName.expression);
+          if (leftSym === importSymbol) {
+            result = extractPropsFromJsx(node);
+            return;
+          }
+        }
+      } else {
+        // Handle <Button /> pattern
+        if (typescript.isIdentifier(tagName)) {
+          const sym = checker.getSymbolAtLocation(tagName);
+          if (sym === importSymbol) {
+            result = extractPropsFromJsx(node);
+            return;
+          }
+        }
+      }
+    }
+
+    typescript.forEachChild(node, visit);
+  }
+
+  visit(storySourceFile);
+  return result;
+}
+
+/**
+ * Resolves props type directly from a component's type (Vue component-meta approach).
+ *
+ * For functional components: `getCallSignatures()[0].parameters[0]`
+ * For class components: construct signature → return type → `props` property
+ *
+ * This is the fallback for args-only stories that have no JSX in the story file.
+ * Does NOT work for polymorphic/generic components (TS #61133), which is acceptable
+ * since args-only stories for polymorphic components don't exist in practice.
+ */
+export function resolvePropsFromComponentType(
+  typescript: typeof ts,
+  checker: ts.TypeChecker,
+  componentType: ts.Type,
+): ts.Type | undefined {
+  // Try call signatures first (functional components — the common case)
+  const callSigs = componentType.getCallSignatures();
+  if (callSigs.length > 0) {
+    const sig = callSigs[0];
+    if (sig.parameters.length === 0) {
+      // No-props component (e.g., () => <div />)
+      // Return void as a sentinel — extractFromProbe will serialize as empty props {}
+      return checker.getVoidType();
+    }
+    const propsType = checker.getTypeOfSymbol(sig.parameters[0]);
+    if (!(propsType.flags & typescript.TypeFlags.Any)) {
+      return propsType;
+    }
+  }
+
+  // Try construct signatures (class components)
+  // For `class Button extends React.Component<Props>`, the constructor type has
+  // construct signatures whose return type (the instance) has a `props` property.
+  const ctorSigs = componentType.getConstructSignatures();
+  for (const sig of ctorSigs) {
+    const ret = sig.getReturnType();
+    const propsSym = ret.getProperty('props');
+    if (propsSym) {
+      const propsType = checker.getTypeOfSymbol(propsSym);
+      if (!(propsType.flags & typescript.TypeFlags.Any)) {
+        return propsType;
+      }
+    }
+  }
+
+  return undefined;
+}
+
+/**
+ * Checks if a type represents a React component (function or class).
+ *
+ * Used by `extractDocs` to filter non-component exports. The production path
+ * (`extractPropsFromStory`) doesn't need this because it uses actual JSX in story files
+ * or the component is explicitly declared in `meta.component`.
+ *
+ * Heuristic:
+ * - Function components: call signature returning ReactNode-like type
+ * - Class components: construct signature returning instance with `render` method
+ * - Rejects: utility functions, HOFs, async functions, plain objects, namespaces
+ */
+export function isReactComponentType(
+  typescript: typeof ts,
+  checker: ts.TypeChecker,
+  componentType: ts.Type,
+): boolean {
+  // Class components: has construct signatures with render method on instance
+  const ctorSigs = componentType.getConstructSignatures();
+  for (const sig of ctorSigs) {
+    const ret = sig.getReturnType();
+    if (ret.getProperty('render')) {
+      return true;
+    }
+  }
+
+  // Function components: call signature returning ReactNode-like type
+  const callSigs = componentType.getCallSignatures();
+  if (callSigs.length === 0) {
+    return false;
+  }
+
+  const returnType = checker.getReturnTypeOfSignature(callSigs[0]);
+  return isReactNodeLike(typescript, checker, returnType);
+}
+
+/**
+ * Checks if a type is compatible with React's ReactNode.
+ *
+ * ReactNode = ReactElement | string | number | boolean | null | undefined | Iterable<ReactNode>
+ *
+ * We detect ReactElement by checking for the `type`, `props`, `key` shape (present on all
+ * React element types across all React versions).
+ *
+ * Rejects: plain objects, functions, Promises, void, etc.
+ */
+function isReactNodeLike(
+  typescript: typeof ts,
+  checker: ts.TypeChecker,
+  type: ts.Type,
+): boolean {
+  // `any` is compatible with ReactNode (e.g., JSON.parse returns any)
+  if (type.flags & typescript.TypeFlags.Any) {
+    return true;
+  }
+
+  // Null and undefined are valid ReactNode
+  if (type.flags & (typescript.TypeFlags.Null | typescript.TypeFlags.Undefined)) {
+    return true;
+  }
+
+  // Union types: any member being ReactNode-like makes it valid
+  // (e.g., ReactElement | null, string | number | boolean | ReactElement | null | undefined)
+  if (type.isUnion()) {
+    return type.types.some((t) => isReactNodeLike(typescript, checker, t));
+  }
+
+  // ReactElement shape: has `type`, `props`, `key` properties
+  // This is stable across all React versions (16-19+)
+  if (type.getProperty('type') && type.getProperty('props') && type.getProperty('key')) {
+    return true;
+  }
+
+  // String, number, boolean literals are valid ReactNode
+  if (
+    type.flags &
+    (typescript.TypeFlags.String |
+      typescript.TypeFlags.Number |
+      typescript.TypeFlags.Boolean |
+      typescript.TypeFlags.StringLiteral |
+      typescript.TypeFlags.NumberLiteral |
+      typescript.TypeFlags.BooleanLiteral)
+  ) {
+    return true;
+  }
+
+  return false;
 }
 
 // ---------------------------------------------------------------------------

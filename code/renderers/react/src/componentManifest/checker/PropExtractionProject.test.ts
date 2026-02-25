@@ -533,7 +533,7 @@ describe('PropExtractionManager integration', () => {
 // Compound component detection via memberAccess
 // ---------------------------------------------------------------------------
 
-describe('extractDocsByImportBulk with memberAccess (compound components)', () => {
+describe('extractPropsFromStories with memberAccess (compound components)', () => {
   let tempDir: string | undefined;
 
   afterEach(() => {
@@ -572,6 +572,12 @@ describe('extractDocsByImportBulk with memberAccess (compound components)', () =
 
         export const Accordion = { Root, Item, Trigger };
       `,
+      'accordion.stories.tsx': `
+        import React from 'react';
+        import { Accordion } from './accordion';
+        export default { component: Accordion };
+        export const Default = () => <Accordion.Root multiple><Accordion.Item value="a"><Accordion.Trigger /></Accordion.Item></Accordion.Root>;
+      `,
     });
     tempDir = projectDir;
 
@@ -585,11 +591,18 @@ describe('extractDocsByImportBulk with memberAccess (compound components)', () =
     const project = new PropExtractionProject(ts, parsed, configPath);
 
     try {
-      // memberAccess='Root' → probe <Accordion.Root />, get Root's props
-      const results = project.extractDocsByImportBulk([
-        { importSpecifier: './accordion', exportName: 'Accordion', memberAccess: 'Root' },
+      // memberAccess='Root' → find <Accordion.Root /> in story, get Root's props
+      const results = project.extractPropsFromStories([
+        {
+          storyFilePath: filePaths['accordion.stories.tsx'],
+          componentPath: filePaths['accordion.tsx'],
+          exportName: 'Accordion',
+          importId: './accordion',
+          memberAccess: 'Root',
+        },
       ]);
-      const doc = results.get('./accordion::Accordion');
+      const docs = results.get(filePaths['accordion.stories.tsx'])?.get('Accordion');
+      const doc = docs?.[0];
 
       expect(doc).toBeDefined();
       expect(doc!.props.multiple).toBeDefined();
@@ -607,7 +620,7 @@ describe('extractDocsByImportBulk with memberAccess (compound components)', () =
   it('probes the member directly when memberAccess is set', () => {
     // When memberAccess is set (derived from outermost JSX like <Button.Aligner>),
     // the probe targets that member directly — no fallback needed.
-    const { projectDir, configPath } = createTempProject({
+    const { projectDir, configPath, filePaths } = createTempProject({
       'button.tsx': `
         import React from 'react';
 
@@ -646,6 +659,13 @@ describe('extractDocsByImportBulk with memberAccess (compound components)', () =
 
         export default ButtonRoot;
       `,
+      'button.stories.tsx': `
+        import React from 'react';
+        import Button from './button';
+        export default { component: Button };
+        export const AlignerStory = () => <Button.Aligner side="start"><Button /></Button.Aligner>;
+        export const ButtonStory = () => <Button variant="solid" />;
+      `,
     });
     tempDir = projectDir;
 
@@ -659,23 +679,36 @@ describe('extractDocsByImportBulk with memberAccess (compound components)', () =
     const project = new PropExtractionProject(ts, parsed, configPath);
 
     try {
-      // memberAccess='Aligner' → probe <Button.Aligner />, get Aligner's props
-      const results = project.extractDocsByImportBulk([
-        { importSpecifier: './button', exportName: 'default', memberAccess: 'Aligner' },
+      // memberAccess='Aligner' → find <Button.Aligner />, get Aligner's props
+      const results = project.extractPropsFromStories([
+        {
+          storyFilePath: filePaths['button.stories.tsx'],
+          componentPath: filePaths['button.tsx'],
+          exportName: 'default',
+          importId: './button',
+          memberAccess: 'Aligner',
+        },
       ]);
 
-      const doc = results.get('./button::default');
+      const docs = results.get(filePaths['button.stories.tsx'])?.get('default');
+      const doc = docs?.[0];
       expect(doc).toBeDefined();
       expect(doc!.props.side).toBeDefined();
       // Should NOT have Button's own props
       expect(doc!.props.variant).toBeUndefined();
 
-      // Without memberAccess → probe <Button />, get Button's own props
-      const results2 = project.extractDocsByImportBulk([
-        { importSpecifier: './button', exportName: 'default' },
+      // Without memberAccess → find <Button />, get Button's own props
+      const results2 = project.extractPropsFromStories([
+        {
+          storyFilePath: filePaths['button.stories.tsx'],
+          componentPath: filePaths['button.tsx'],
+          exportName: 'default',
+          importId: './button',
+        },
       ]);
 
-      const doc2 = results2.get('./button::default');
+      const docs2 = results2.get(filePaths['button.stories.tsx'])?.get('default');
+      const doc2 = docs2?.[0];
       expect(doc2).toBeDefined();
       expect(doc2!.props.variant).toBeDefined();
       expect(doc2!.props.color).toBeDefined();
@@ -713,6 +746,18 @@ describe('extractDocsByImportBulk with memberAccess (compound components)', () =
         }
         export const Button = (props: ButtonProps) => <button />;
       `,
+      'dialog.stories.tsx': `
+        import React from 'react';
+        import { Dialog } from './dialog';
+        export default { component: Dialog };
+        export const Default = () => <Dialog.Root open><Dialog.Content trapFocus /></Dialog.Root>;
+      `,
+      'button.stories.tsx': `
+        import React from 'react';
+        import { Button } from './button';
+        export default { component: Button };
+        export const Default = () => <Button label="Click" />;
+      `,
     });
     tempDir = projectDir;
 
@@ -727,20 +772,31 @@ describe('extractDocsByImportBulk with memberAccess (compound components)', () =
 
     try {
       // Mix: compound component with memberAccess + regular component
-      const results = project.extractDocsByImportBulk([
-        { importSpecifier: './dialog', exportName: 'Dialog', memberAccess: 'Root' },
-        { importSpecifier: './button', exportName: 'Button' },
+      const results = project.extractPropsFromStories([
+        {
+          storyFilePath: filePaths['dialog.stories.tsx'],
+          componentPath: filePaths['dialog.tsx'],
+          exportName: 'Dialog',
+          importId: './dialog',
+          memberAccess: 'Root',
+        },
+        {
+          storyFilePath: filePaths['button.stories.tsx'],
+          componentPath: filePaths['button.tsx'],
+          exportName: 'Button',
+          importId: './button',
+        },
       ]);
 
-      const dialogDoc = results.get('./dialog::Dialog');
-      expect(dialogDoc).toBeDefined();
-      expect(dialogDoc!.props.open).toBeDefined();
-      expect(dialogDoc!.props.onOpenChange).toBeDefined();
+      const dialogDocs = results.get(filePaths['dialog.stories.tsx'])?.get('Dialog');
+      expect(dialogDocs?.[0]).toBeDefined();
+      expect(dialogDocs![0].props.open).toBeDefined();
+      expect(dialogDocs![0].props.onOpenChange).toBeDefined();
 
-      const buttonDoc = results.get('./button::Button');
-      expect(buttonDoc).toBeDefined();
-      expect(buttonDoc!.props.label).toBeDefined();
-      expect(buttonDoc!.props.variant).toBeDefined();
+      const buttonDocs = results.get(filePaths['button.stories.tsx'])?.get('Button');
+      expect(buttonDocs?.[0]).toBeDefined();
+      expect(buttonDocs![0].props.label).toBeDefined();
+      expect(buttonDocs![0].props.variant).toBeDefined();
     } finally {
       project.dispose();
     }

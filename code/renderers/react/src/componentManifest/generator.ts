@@ -74,8 +74,7 @@ interface PropTypesContext {
   storyFilePath: string;
   /**
    * For compound components (e.g. `<Accordion.Root>`), the sub-property name detected from the
-   * story's JSX usage. Tells the probe to generate `<Accordion.Root />` instead of `<Accordion
-   * />`.
+   * story's JSX usage. Tells the extractor to match `<Accordion.Root />` JSX elements.
    */
   memberAccess?: string;
 }
@@ -337,7 +336,7 @@ export const manifests: PresetPropertyFn<
     results.filter((r) => r.propTypesCtx).map((r) => [r.manifest.id, r.propTypesCtx!] as const)
   );
 
-  // --- reactPropTypes: bulk extraction (one probe + one getProgram per project) ---
+  // --- reactPropTypes: probe-free extraction from story JSX ---
   const propTypesStartTime = performance.now();
   let propTypesCount = 0;
   const manager = await managerWarmup;
@@ -351,136 +350,49 @@ export const manifests: PresetPropertyFn<
       manager.startWatching();
     }
 
-    // Group local-file contexts by project for bulk extraction
-    const localByProject = new Map<
-      ReturnType<typeof manager.getProjectForFile>,
-      { id: string; ctx: PropTypesContext }[]
-    >();
-    const packageContexts: { id: string; ctx: PropTypesContext }[] = [];
-
-    const t1 = performance.now();
+    // Group components by project for batch extraction — one getProgram() per project.
+    type ProjectEntry = { component: ComponentManifest; ctx: PropTypesContext };
+    const byProject = new Map<ReturnType<typeof manager.getProjectForFile>, ProjectEntry[]>();
     for (const component of components) {
       const ctx = propTypesContextById.get(component.id);
       if (!ctx) {
         continue;
       }
-      const isPackageImport = ctx.importId && !ctx.importId.startsWith('.');
-      if (isPackageImport) {
-        packageContexts.push({ id: component.id, ctx });
-        continue;
-      }
       try {
-        const project = manager.getProjectForFile(ctx.componentPath);
-        let group = localByProject.get(project);
-        if (!group) {
-          group = [];
-          localByProject.set(project, group);
+        const project = manager.getProjectForFile(ctx.storyFilePath);
+        let entries = byProject.get(project);
+        if (!entries) {
+          entries = [];
+          byProject.set(project, entries);
         }
-        group.push({ id: component.id, ctx });
+        entries.push({ component, ctx });
       } catch {
-        // skip files that can't find a project
+        // skip components that can't find a project
       }
     }
-    propTypesDebug.groupingMs = Math.round(performance.now() - t1);
-    propTypesDebug.localProjects = localByProject.size;
-    propTypesDebug.localFiles = [...localByProject.values()].reduce((s, g) => s + g.length, 0);
-    propTypesDebug.packageImports = packageContexts.length;
 
-    // Bulk-extract local files: one probe + one getProgram() per project
-    const bulkDebug: Array<Record<string, unknown>> = [];
-    for (const [project, entries] of localByProject) {
-      try {
-        const filePaths = entries.map((e) => e.ctx.componentPath);
-        const tBulk = performance.now();
-        const bulkResults = project.extractDocsBulk(filePaths);
-        const bulkMs = Math.round(performance.now() - tBulk);
-        bulkDebug.push({
-          files: filePaths.length,
-          ms: bulkMs,
-          config: project.configPath ?? 'inferred',
-          ...project.lastBulkDebug,
-        });
+    const t1 = performance.now();
+    for (const [project, entries] of byProject) {
+      const results = project.extractPropsFromStories(
+        entries.map(({ ctx }) => ({
+          storyFilePath: ctx.storyFilePath,
+          componentPath: ctx.componentPath,
+          exportName: ctx.importName ?? 'default',
+          importId: ctx.importId,
+          memberAccess: ctx.memberAccess,
+        })),
+      );
 
-        for (const entry of entries) {
-          const docs = bulkResults.get(entry.ctx.componentPath);
-          const doc = docs?.find((d) => d.exportName === (entry.ctx.importName ?? 'default'));
-          if (doc) {
-            const component = componentsById.get(entry.id);
-            if (component) {
-              (component as ReactComponentManifest).reactPropTypes = doc;
-              propTypesCount++;
-            }
-          }
+      for (const { component, ctx } of entries) {
+        const docs = results.get(ctx.storyFilePath)?.get(ctx.importName ?? 'default');
+        if (docs && docs.length > 0) {
+          (component as ReactComponentManifest).reactPropTypes = docs[0];
+          propTypesCount++;
         }
-      } catch (error) {
-        logger.debug(`[reactPropTypes] bulk extraction failed`);
       }
     }
-    propTypesDebug.bulkExtractions = bulkDebug;
-
-    // Package imports: group by project, then bulk-extract per project
-    const tPkg = performance.now();
-    let pkgCount = 0;
-    const pkgByProject = new Map<
-      ReturnType<typeof manager.getProjectForFile>,
-      { id: string; ctx: PropTypesContext }[]
-    >();
-    for (const entry of packageContexts) {
-      if (!entry.ctx.importName) {
-        continue;
-      }
-      try {
-        const project = manager.getProjectForFile(entry.ctx.storyFilePath);
-        let group = pkgByProject.get(project);
-        if (!group) {
-          group = [];
-          pkgByProject.set(project, group);
-        }
-        group.push(entry);
-      } catch {
-        // skip
-      }
-    }
-    const pkgBulkDebug: Array<Record<string, unknown>> = [];
-    for (const [project, entries] of pkgByProject) {
-      try {
-        const bulkEntries = entries.map((e) => ({
-          importSpecifier: e.ctx.importId!,
-          exportName: e.ctx.importName!,
-          memberAccess: e.ctx.memberAccess,
-          componentPath: e.ctx.componentPath,
-        }));
-        const tBulk = performance.now();
-        const bulkResults = project.extractDocsByImportBulk(bulkEntries);
-        const bulkMs = Math.round(performance.now() - tBulk);
-        pkgBulkDebug.push({
-          specifiers: bulkEntries.length,
-          ms: bulkMs,
-          config: project.configPath ?? 'inferred',
-        });
-
-        for (const entry of entries) {
-          const mapKey = `${entry.ctx.importId!}::${entry.ctx.importName!}`;
-          const doc = bulkResults.get(mapKey);
-          if (doc) {
-            const component = componentsById.get(entry.id);
-            if (component) {
-              (component as ReactComponentManifest).reactPropTypes = doc;
-              propTypesCount++;
-              pkgCount++;
-            }
-          }
-        }
-      } catch {
-        logger.debug(`[reactPropTypes] bulk package extraction failed`);
-      }
-    }
-    if (packageContexts.length > 0) {
-      propTypesDebug.packageImportsMs = Math.round(performance.now() - tPkg);
-      propTypesDebug.packageImportsExtracted = pkgCount;
-      propTypesDebug.packageBulkExtractions = pkgBulkDebug;
-    }
-
+    propTypesDebug.extractionMs = Math.round(performance.now() - t1);
+    propTypesDebug.components = components.length;
   }
   const propTypesDurationMs = Math.round(performance.now() - propTypesStartTime);
 
