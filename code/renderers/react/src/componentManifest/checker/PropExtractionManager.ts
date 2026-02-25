@@ -446,50 +446,27 @@ export class PropExtractionManager {
   }
 
   /**
-   * Start watching directories for file changes.
+   * Enable file watching for dev mode.
    *
-   * VS Code pattern: the IDE watches the filesystem and forwards events to the language service.
-   * This is the headless equivalent — we ARE the file watcher, forwarding events to our projects
-   * via the existing onFileChanged/Created/Deleted/ConfigChanged methods.
+   * Called at manager creation. Actual fs.watch instances are created lazily when projects
+   * are discovered via getOrCreateConfiguredProject() — TypeScript drives which directories
+   * to watch. Additional directories are added automatically when project references point
+   * to sibling packages (monorepo support).
    *
-   * Uses Node.js fs.watch with recursive mode (supported on macOS, Windows, and Linux with
-   * Node.js 19+). No external dependencies needed.
-   *
-   * When watching is active, invalidate() is no longer needed — individual file events keep
-   * projects in sync incrementally, exactly like Volar in VS Code.
-   *
-   * Additional directories are automatically watched when new projects are discovered via
-   * tsconfig references (monorepo support — sibling packages get their own watchers).
-   *
-   * No initial directories needed — projects auto-watch their own directories when discovered
-   * via getOrCreateConfiguredProject(). TypeScript knows which directories matter.
-   *
-   * Idempotent: no-op if already watching. On first call, retroactively watches directories
-   * of already-created projects (handles the case where startWatching is called after the
-   * first extraction has already discovered projects).
+   * Watchers are unref'd so they never block process exit (safe for build mode).
+   * When watching is active, invalidate() is not needed — file events keep projects
+   * in sync incrementally, like Volar's LS in VS Code.
    */
   startWatching(): void {
-    if (this.watching) {
-      return;
-    }
     this.watching = true;
-
-    // Retroactively watch directories of already-created projects.
-    // When startWatching() is called after the first extraction, projects
-    // already exist but weren't watched (watching was false during creation).
-    for (const configPath of this.projects.keys()) {
-      this.watchDirectory(path.dirname(configPath));
-    }
-  }
-
-  get isWatching(): boolean {
-    return this.watching;
   }
 
   /**
    * Watch a single directory recursively. Skips if already covered by an existing watcher
    * (same dir or parent dir). Called automatically when new projects are discovered via
    * tsconfig references — ensures monorepo sibling packages are watched too.
+   *
+   * No-op when watching is disabled (build mode without startWatching()).
    */
   private watchDirectory(dir: string): void {
     if (!this.watching) {
