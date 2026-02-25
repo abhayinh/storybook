@@ -38,13 +38,12 @@ interface ReactComponentManifest extends ComponentManifest {
 // Lazy singleton PropExtractionManager — survives across dev requests,
 // dies on build process exit. TypeScript is an optional peer dep.
 //
-// Dev mode (primary flow): startWatching() enables file watching at creation.
-// Actual fs.watch instances are created lazily when projects are discovered
-// during the first extraction. Subsequent requests benefit from incremental
-// updates — only changed files are recompiled.
+// Dev mode (primary flow): the `watch` flag from the preset options enables
+// file watching. Actual fs.watch instances are created lazily when projects
+// are discovered during the first extraction. Subsequent requests benefit
+// from incremental updates — only changed files are recompiled.
 //
-// Build mode: same code path, but process exits after one extraction.
-// Watchers are unref'd so they never block process exit.
+// Build mode: watch is false — no watchers, no event handling. One-shot.
 // ---------------------------------------------------------------------------
 
 let propTypesManagerPromise: Promise<PropExtractionManager | null> | undefined;
@@ -54,9 +53,7 @@ function getPropTypesManager(): Promise<PropExtractionManager | null> {
     propTypesManagerPromise = (async () => {
       try {
         const ts = await import('typescript');
-        const manager = new PropExtractionManager(ts);
-        manager.startWatching();
-        return manager;
+        return new PropExtractionManager(ts);
       } catch (error) {
         logger.debug('[reactPropTypes] TypeScript not available, skipping prop extraction');
         return null;
@@ -181,7 +178,7 @@ export const manifests: PresetPropertyFn<
   StorybookConfigRaw,
   { manifestEntries: IndexEntry[] }
 > = async (existingManifests = {}, options) => {
-  const { manifestEntries, presets } = options;
+  const { manifestEntries, presets, watch } = options as typeof options & { watch?: boolean };
   const typescriptOptions =
     (await presets?.apply<Partial<TypescriptOptions>>('typescript', {})) ?? {};
 
@@ -346,12 +343,13 @@ export const manifests: PresetPropertyFn<
   const manager = await managerWarmup;
   const propTypesDebug: Record<string, unknown> = {};
   if (manager) {
-    // Freshness strategy:
-    // - First call: fresh LS, all files read from disk. Watchers start lazily
-    //   as projects are discovered (via getOrCreateConfiguredProject).
-    // - Subsequent calls (dev mode): watchers keep projects in sync via
-    //   onFileChanged/Created/Deleted events. No invalidation needed.
-    // - Build mode: one-shot, process exits. Watchers are unref'd.
+    // Dev mode: enable watching (idempotent). Actual fs.watch instances are
+    // created lazily as projects are discovered below. Subsequent requests
+    // benefit from incremental updates via file events.
+    // Build mode: watch is false — no watchers, no overhead.
+    if (watch) {
+      manager.startWatching();
+    }
 
     // Group local-file contexts by project for bulk extraction
     const localByProject = new Map<
