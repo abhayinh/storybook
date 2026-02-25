@@ -464,10 +464,27 @@ export class PropExtractionManager {
    *
    * No initial directories needed — projects auto-watch their own directories when discovered
    * via getOrCreateConfiguredProject(). TypeScript knows which directories matter.
+   *
+   * Idempotent: no-op if already watching. On first call, retroactively watches directories
+   * of already-created projects (handles the case where startWatching is called after the
+   * first extraction has already discovered projects).
    */
   startWatching(): void {
-    this.stopWatching();
+    if (this.watching) {
+      return;
+    }
     this.watching = true;
+
+    // Retroactively watch directories of already-created projects.
+    // When startWatching() is called after the first extraction, projects
+    // already exist but weren't watched (watching was false during creation).
+    for (const configPath of this.projects.keys()) {
+      this.watchDirectory(path.dirname(configPath));
+    }
+  }
+
+  get isWatching(): boolean {
+    return this.watching;
   }
 
   /**
@@ -529,6 +546,9 @@ export class PropExtractionManager {
           }, 50)
         );
       });
+      // Don't let watchers keep the process alive (important for build mode
+      // where the process should exit cleanly after writing manifests).
+      watcher.unref();
       this.watchers.push(watcher);
     } catch {
       // Directory might not exist or recursive watching not supported

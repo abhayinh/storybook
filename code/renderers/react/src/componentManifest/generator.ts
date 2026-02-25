@@ -38,9 +38,9 @@ interface ReactComponentManifest extends ComponentManifest {
 // Lazy singleton PropExtractionManager — survives across dev requests,
 // dies on build process exit. TypeScript is an optional peer dep.
 //
-// startWatching() is called immediately so the manager stays in sync with
-// disk changes via fs.watch events (Volar Checker pattern). This replaces
-// the old invalidate()-per-request sledgehammer with surgical per-file events.
+// Watching is NOT started here — it's enabled after the first extraction in
+// manifests(). This keeps build mode clean (one-shot, no watchers) while dev
+// mode benefits from incremental updates via fs.watch on subsequent requests.
 // ---------------------------------------------------------------------------
 
 let propTypesManagerPromise: Promise<PropExtractionManager | null> | undefined;
@@ -50,9 +50,7 @@ function getPropTypesManager(): Promise<PropExtractionManager | null> {
     propTypesManagerPromise = (async () => {
       try {
         const ts = await import('typescript');
-        const manager = new PropExtractionManager(ts);
-        manager.startWatching();
-        return manager;
+        return new PropExtractionManager(ts);
       } catch (error) {
         logger.debug('[reactPropTypes] TypeScript not available, skipping prop extraction');
         return null;
@@ -342,9 +340,15 @@ export const manifests: PresetPropertyFn<
   const manager = await managerWarmup;
   const propTypesDebug: Record<string, unknown> = {};
   if (manager) {
-    // No invalidate() needed — the manager's file watcher (startWatching) keeps
-    // projects incrementally up to date via onFileChanged/Created/Deleted events.
-    // The LS only recompiles files that actually changed since the last request.
+    // Freshness strategy:
+    // - First call: fresh LS, no invalidation or watching needed.
+    // - Subsequent calls (dev mode): watchers keep projects in sync via
+    //   onFileChanged/Created/Deleted events. No invalidation needed.
+    // - Build mode: one-shot, process exits after this call. No watching.
+    //
+    // startWatching() is called at the end of this block (after extraction)
+    // so watchers only start once projects exist. It's idempotent — no-op
+    // on subsequent calls.
 
     // Group local-file contexts by project for bulk extraction
     const localByProject = new Map<
@@ -475,6 +479,11 @@ export const manifests: PresetPropertyFn<
       propTypesDebug.packageImportsExtracted = pkgCount;
       propTypesDebug.packageBulkExtractions = pkgBulkDebug;
     }
+
+    // Enable watching AFTER extraction so dev mode benefits from incremental
+    // updates on subsequent requests. Idempotent — no-op if already watching.
+    // In build mode (one-shot), watchers are unref'd so they don't block exit.
+    manager.startWatching();
   }
   const propTypesDurationMs = Math.round(performance.now() - propTypesStartTime);
 
