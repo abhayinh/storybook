@@ -1,3 +1,8 @@
+## 10.2.13
+
+- Core: Avoid hanging when inferring args for recursive calls on DOM elemens - [#33922](https://github.com/storybookjs/storybook/pull/33922), thanks @valentinpalkovic!
+- Viewport: Prioritize story viewport globals and avoid user-global pollution - [#33849](https://github.com/storybookjs/storybook/pull/33849), thanks @ia319!
+
 ## 10.2.12
 
 - Core: Sanitize inputs for save from controls - [#33868](https://github.com/storybookjs/storybook/pull/33868), thanks @valentinpalkovic!
