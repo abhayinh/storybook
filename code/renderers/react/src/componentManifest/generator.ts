@@ -22,7 +22,7 @@ import {
   resetDocgenTimings,
 } from './getComponentImports';
 import { extractJSDocInfo } from './jsdocTags';
-import { PropExtractionManager } from './lsp';
+import { PropExtractionManager } from './checker';
 import type { ComponentDoc } from './propExtractor';
 import { type DocObj } from './reactDocgen';
 import { type ComponentDocWithExportName, invalidateParser } from './reactDocgenTypescript';

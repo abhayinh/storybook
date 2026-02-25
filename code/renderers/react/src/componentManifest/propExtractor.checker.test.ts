@@ -1,5 +1,5 @@
 /**
- * PropExtractor tests using the LanguageService (LSP) approach.
+ * PropExtractor tests using the LanguageService (checker) approach.
  *
  * These are copies of the tests in propExtractor.test.ts, rewritten to use PropExtractionProject
  * (persistent LanguageService) instead of createVirtualProgram (one-shot ts.Program per test). This
@@ -13,7 +13,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import ts from 'typescript';
 
-import { PropExtractionProject } from './lsp/PropExtractionProject';
+import { PropExtractionProject } from './checker/PropExtractionProject';
 import type { ComponentDoc } from './propExtractor';
 
 // ---------------------------------------------------------------------------
