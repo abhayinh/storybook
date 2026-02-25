@@ -1,17 +1,17 @@
 /**
  * PropExtractionProject — one TS LanguageService per tsconfig.
  *
- * Follows Volar's typescriptProjectLs.ts + createChecker.ts patterns:
+ * Follows Volar's createChecker.ts patterns:
  *
- * - LanguageServiceHost with virtual probe file
- * - ProjectVersion++ on file changes (smart: only for known files)
+ * - LanguageServiceHost with virtual probe files
+ * - Selective projectVersion++ (only bump for files in program, Checker pattern)
+ * - Lazy checkRootFilesUpdate via shouldCheckRootFiles flag (Checker pattern)
  * - Shared fsFileSnapshots with mtime-based caching (owned by Manager)
- * - ShouldCheckRootFiles flag for lazy tsconfig re-evaluation (Volar's createChecker.ts)
- * - TryAddFile for dynamic file inclusion (Volar's typescriptProjectLs.ts)
+ * - TryAddFile for dynamic file inclusion (typescriptProjectLs.ts)
  *
- * The probe file is a virtual TypeScript file that imports from the target component file and uses
- * React's ComponentProps<typeof X> to extract props. Updating probeContent + bumping probeVersion
- * is enough — the LanguageService sees a new version and re-evaluates incrementally.
+ * The probe files are virtual TypeScript files that import from target component files and use
+ * React's ComponentProps<typeof X> to extract props. Separate probeVersion/probeVersionPkg counters
+ * ensure probe recompilation is decoupled from disk file changes.
  */
 import * as path from 'path';
 import type ts from 'typescript';
@@ -21,22 +21,20 @@ import { type ComponentDoc, extractFromProbe, resolveProbeTypes } from '../propE
 export class PropExtractionProject {
   private ls: ts.LanguageService;
   private projectVersion = 0;
-  private probeContent = '';
+  /** Volar Checker pattern: separate version counters for probe files. */
   private probeVersion = 0;
+  private probeVersionPkg = 0;
+  /** Volar Checker pattern (createChecker.ts line 356): lazy flag for config re-parse. */
+  private shouldCheckRootFiles = false;
+  private probeContent = '';
   /** Separate probe state for package imports — avoids clobbering with local probe. */
   private probeContentPkg = '';
-  private probeVersionPkg = 0;
-  /** Fast lookup for tryAddFile — mirrors commandLine.fileNames. */
-  private fileNamesSet: Set<string>;
-  /** Cached result for getScriptFileNames — invalidated on fileNames change. */
-  private cachedFileNames: string[] | undefined;
-
   /**
-   * Volar pattern (createChecker.ts lines 436-447): Lazy flag that defers tsconfig re-parsing until
-   * the next getProjectVersion() or getScriptFileNames() call. Set on file creation/deletion.
+   * Volar Checker pattern (createChecker.ts line 376-380): cached file names array.
+   * Avoids creating a new array on every getScriptFileNames() call.
+   * Invalidated when commandLine.fileNames or probe files change.
    */
-  private shouldCheckRootFiles = false;
-
+  private cachedScriptFileNames: string[] | undefined;
   readonly probeFilePath: string;
   /** Separate virtual file for package-import probes. */
   readonly probeFilePathPkg: string;
@@ -47,15 +45,17 @@ export class PropExtractionProject {
     public readonly configPath: string | undefined,
     /**
      * Shared snapshot cache owned by PropExtractionManager.
-     *
-     * Volar pattern (createChecker.ts line 83): module-level fsFileSnapshots. Multiple projects
-     * referencing the same file (e.g. @types/react) share one cached snapshot instead of reading
-     * from disk independently.
+     * Volar pattern (createChecker.ts line 83): module-level fsFileSnapshots.
      */
     private sharedSnapshots: Map<
       string,
       [number | undefined, ts.IScriptSnapshot | undefined]
-    > = new Map()
+    > = new Map(),
+    /**
+     * Volar Checker pattern (createChecker.ts line 89): injected callback for re-parsing config.
+     * Called lazily by checkRootFilesUpdate(). Undefined for inferred projects.
+     */
+    private reloadCommandLine?: () => ts.ParsedCommandLine
   ) {
     const projectRoot = configPath
       ? path.dirname(configPath)
@@ -63,121 +63,135 @@ export class PropExtractionProject {
     // .tsx extension required for JSX elements in the probe
     this.probeFilePath = path.join(projectRoot, '__probe__.tsx');
     this.probeFilePathPkg = path.join(projectRoot, '__probe_pkg__.tsx');
-    this.fileNamesSet = new Set(commandLine.fileNames);
+    // Volar pattern (createProject.ts): extract getScriptSnapshot and getScriptVersion
+    // as standalone functions so readFile and fileExists can reference them.
+    const getScriptSnapshot = (fileName: string): ts.IScriptSnapshot | undefined => {
+      if (fileName === this.probeFilePath) {
+        return this.typescript.ScriptSnapshot.fromString(this.probeContent);
+      }
+      if (fileName === this.probeFilePathPkg) {
+        return this.typescript.ScriptSnapshot.fromString(this.probeContentPkg);
+      }
+      // Volar pattern: mtime-based snapshot cache (shared across projects)
+      const mtime = this.typescript.sys.getModifiedTime?.(fileName)?.valueOf();
+      const cached = this.sharedSnapshots.get(fileName);
+      if (cached && cached[0] === mtime) {
+        return cached[1];
+      }
+
+      // Volar pattern (createChecker.ts lines 120-139):
+      // Read from disk, cache with mtime, handle missing files
+      if (this.typescript.sys.fileExists(fileName)) {
+        const content = this.typescript.sys.readFile(fileName);
+        const snapshot =
+          content !== undefined ? this.typescript.ScriptSnapshot.fromString(content) : undefined;
+        this.sharedSnapshots.set(fileName, [mtime, snapshot]);
+        return snapshot;
+      } else {
+        this.sharedSnapshots.set(fileName, [mtime, undefined]);
+        return undefined;
+      }
+    };
+
+    const getScriptVersion = (fileName: string): string => {
+      if (fileName === this.probeFilePath) {
+        return this.probeVersion.toString();
+      }
+      if (fileName === this.probeFilePathPkg) {
+        return this.probeVersionPkg.toString();
+      }
+      // Volar pattern (createProject.ts line 377-378): mtime for disk files, '' for missing
+      if (!this.typescript.sys.fileExists(fileName)) {
+        return '';
+      }
+      return this.typescript.sys.getModifiedTime?.(fileName)?.valueOf().toString() ?? '0';
+    };
 
     // Volar pattern (createProject.ts line 52): spread ts.sys as base, then override.
-    // This picks up getDirectories, readDirectory, directoryExists, realpath,
-    // useCaseSensitiveFileNames, etc. without enumerating each one.
     const host: ts.LanguageServiceHost = {
       ...this.typescript.sys,
-      // ts.sys.useCaseSensitiveFileNames is a boolean, but LanguageServiceHost
-      // expects () => boolean. Override to match the interface.
       useCaseSensitiveFileNames: () => this.typescript.sys.useCaseSensitiveFileNames,
+      // Volar pattern (createProject.ts line 59-61): explicit getNewLine method.
+      getNewLine: () => this.typescript.sys.newLine,
 
-      // --- Volar pattern (createChecker.ts:370-372): ---
-      // checkRootFilesUpdate() must be called here, not just in getScriptFileNames.
-      // TS LS calls getProjectVersion() first — if the version string hasn't changed,
-      // it skips getScriptFileNames() entirely. checkRootFilesUpdate() may bump
-      // projectVersion (when new files match the tsconfig), ensuring TS LS picks up
-      // the change on the next sync cycle.
+      // Volar Checker pattern: checkRootFilesUpdate() called lazily inside
+      // getProjectVersion and getScriptFileNames (createChecker.ts lines 370-382).
       getProjectVersion: () => {
         this.checkRootFilesUpdate();
-        return `${this.projectVersion}:${this.probeVersion}:${this.probeVersionPkg}`;
+        return this.projectVersion.toString();
       },
-
+      // Volar Checker pattern (createChecker.ts lines 376-380): cache file names array.
       getScriptFileNames: () => {
-        // Volar pattern (createChecker.ts): cache the file names array to avoid
-        // re-creating it on every LS sync call. Invalidated when fileNames change.
-        if (!this.cachedFileNames) {
-          this.cachedFileNames = [
+        this.checkRootFilesUpdate();
+        if (!this.cachedScriptFileNames) {
+          this.cachedScriptFileNames = [
             ...this.commandLine.fileNames,
             this.probeFilePath,
             this.probeFilePathPkg,
           ];
         }
-        return this.cachedFileNames;
+        return this.cachedScriptFileNames;
       },
-      getScriptVersion: (fileName) => {
-        if (fileName === this.probeFilePath) {
-          return String(this.probeVersion);
-        }
-        if (fileName === this.probeFilePathPkg) {
-          return String(this.probeVersionPkg);
-        }
-        // Volar pattern (createProject.ts:377-378): return '' for non-existent files
-        if (!this.typescript.sys.fileExists(fileName)) {
-          return '';
-        }
-        // Volar pattern: return mtime only. projectVersion is NOT included —
-        // it controls whether the LS re-syncs (via getProjectVersion), not
-        // whether individual files changed. Including it would make the LS
-        // think ALL files changed on every invalidate() call.
-        const mtime = this.typescript.sys.getModifiedTime?.(fileName)?.valueOf();
-        return String(mtime ?? 0);
-      },
-      getScriptSnapshot: (fileName) => {
-        if (fileName === this.probeFilePath) {
-          return this.typescript.ScriptSnapshot.fromString(this.probeContent);
-        }
-        if (fileName === this.probeFilePathPkg) {
-          return this.typescript.ScriptSnapshot.fromString(this.probeContentPkg);
-        }
-        // Volar pattern: mtime-based snapshot cache (shared across projects)
-        const mtime = this.typescript.sys.getModifiedTime?.(fileName)?.valueOf();
-        const cached = this.sharedSnapshots.get(fileName);
-        if (cached && cached[0] === mtime) {
-          return cached[1];
-        }
-
-        // Volar pattern (createChecker.ts lines 120-139):
-        // Read from disk, cache with mtime, handle missing files
-        if (this.typescript.sys.fileExists(fileName)) {
-          const content = this.typescript.sys.readFile(fileName);
-          const snapshot =
-            content !== undefined ? this.typescript.ScriptSnapshot.fromString(content) : undefined;
-          this.sharedSnapshots.set(fileName, [mtime, snapshot]);
-          return snapshot;
-        } else {
-          this.sharedSnapshots.set(fileName, [mtime, undefined]);
-          return undefined;
+      // Volar pattern (createProject.ts lines 121-155): explicit getScriptKind.
+      getScriptKind: (fileName: string) => {
+        switch (path.extname(fileName)) {
+          case '.js':
+          case '.cjs':
+          case '.mjs':
+            return this.typescript.ScriptKind.JS;
+          case '.jsx':
+            return this.typescript.ScriptKind.JSX;
+          case '.ts':
+          case '.cts':
+          case '.mts':
+            return this.typescript.ScriptKind.TS;
+          case '.tsx':
+            return this.typescript.ScriptKind.TSX;
+          case '.json':
+            return this.typescript.ScriptKind.JSON;
+          default:
+            return this.typescript.ScriptKind.Unknown;
         }
       },
+      getScriptVersion,
+      getScriptSnapshot,
       getCompilationSettings: () => this.commandLine.options,
       getCurrentDirectory: () => projectRoot,
       getDefaultLibFileName: this.typescript.getDefaultLibFilePath,
-      fileExists: (f) =>
-        f === this.probeFilePath ||
-        f === this.probeFilePathPkg ||
-        this.typescript.sys.fileExists(f),
-      // Volar pattern: route readFile through snapshot cache for consistency
+      // Volar pattern (createProject.ts line 110-112): fileExists via getScriptVersion
+      fileExists: (f) => getScriptVersion(f) !== '',
+      // Volar pattern (createProject.ts lines 97-102): readFile via getScriptSnapshot
       readFile: (f) => {
-        if (f === this.probeFilePath) {
-          return this.probeContent;
+        const snapshot = getScriptSnapshot(f);
+        if (snapshot) {
+          return snapshot.getText(0, snapshot.getLength());
         }
-        if (f === this.probeFilePathPkg) {
-          return this.probeContentPkg;
-        }
-        const snapshot = host.getScriptSnapshot!(f);
-        return snapshot ? snapshot.getText(0, snapshot.getLength()) : undefined;
       },
-      // Volar pattern: expose project references for composite projects
       getProjectReferences: () => this.commandLine.projectReferences,
     };
 
-    // Volar pattern: no DocumentRegistry — avoid shared state complications.
-    // Volar never uses createDocumentRegistry; our snapshot cache handles sharing.
     this.ls = this.typescript.createLanguageService(host);
   }
 
   /**
-   * Bump projectVersion to trigger LS re-sync.
+   * Force the project to re-sync on next access.
    *
-   * Volar equivalent: file watcher fires → projectVersion++. Forces the LS to re-check
-   * getScriptVersion() (mtime) for every file on the next getProgram() call. If no mtimes changed,
-   * the LS returns the cached Program instantly. No application-level cache needed.
+   * Sets shouldCheckRootFiles flag (lazy re-parse on next getProjectVersion/getScriptFileNames)
+   * and bumps projectVersion (forces LS to re-check getScriptVersion/mtime for all files).
    */
   invalidate(): void {
     this.projectVersion++;
+    this.shouldCheckRootFiles = true;
+  }
+
+  /**
+   * Get the current command line configuration.
+   *
+   * Volar pattern (typescriptProjectLs.ts line 208): Config data is always accessed through
+   * the project — the project IS the cache.
+   */
+  getCommandLine(): ts.ParsedCommandLine {
+    return this.commandLine;
   }
 
   /**
@@ -187,57 +201,37 @@ export class PropExtractionProject {
    * in tsconfig's include.
    */
   tryAddFile(fileName: string): void {
-    const normalized = fileName.replace(/\\/g, '/');
-    if (!this.fileNamesSet.has(normalized)) {
-      this.fileNamesSet.add(normalized);
-      this.commandLine.fileNames.push(normalized);
-      this.cachedFileNames = undefined;
+    if (!this.commandLine.fileNames.includes(fileName)) {
+      this.commandLine.fileNames.push(fileName);
+      this.cachedScriptFileNames = undefined;
       this.projectVersion++;
     }
   }
 
   /**
-   * Lazy root files re-check.
+   * Lazy config re-parse, triggered by shouldCheckRootFiles flag.
    *
-   * Volar pattern (createChecker.ts lines 436-447): Only re-evaluates the tsconfig when
-   * shouldCheckRootFiles is set (after file creation or deletion). Compares old and new fileNames
-   * to avoid unnecessary projectVersion bumps.
+   * Volar Checker pattern (createChecker.ts lines 436-447): Only re-parses when the flag is set
+   * (by created/deleted file events or invalidate()). Only updates fileNames — options changes
+   * are handled by project recreation via onConfigChanged in the Manager.
    */
   private checkRootFilesUpdate(): void {
     if (!this.shouldCheckRootFiles) {
       return;
     }
     this.shouldCheckRootFiles = false;
-
-    // Only re-parse for configured projects (with a tsconfig)
-    if (!this.configPath) {
+    if (!this.reloadCommandLine) {
       return;
     }
-
     try {
-      const config = this.typescript.readJsonConfigFile(
-        this.configPath,
-        this.typescript.sys.readFile
-      );
-      const newCommandLine = this.typescript.parseJsonSourceFileConfigFileContent(
-        config,
-        this.typescript.sys,
-        path.dirname(this.configPath),
-        {},
-        this.configPath
-      );
-      // Volar patch: outDir = undefined
-      newCommandLine.options.outDir = undefined;
-      newCommandLine.fileNames = newCommandLine.fileNames.map((f) => f.replace(/\\/g, '/'));
-
+      const newCommandLine = this.reloadCommandLine();
       if (!arrayItemsEqual(newCommandLine.fileNames, this.commandLine.fileNames)) {
         this.commandLine.fileNames = newCommandLine.fileNames;
-        this.fileNamesSet = new Set(newCommandLine.fileNames);
-        this.cachedFileNames = undefined;
+        this.cachedScriptFileNames = undefined;
         this.projectVersion++;
       }
     } catch {
-      // Config parse failure — keep existing commandLine
+      // Config parse failure — keep existing fileNames
     }
   }
 
@@ -308,12 +302,13 @@ export class PropExtractionProject {
     debug.probeLines = source.split('\n').length;
 
     // Only update probe if content actually changed — stable probe means the
-    // LS skips recompilation entirely (probeVersion unchanged → same getScriptVersion).
+    // LS skips recompilation entirely (projectVersion unchanged → same getScriptVersion).
     const probeChanged = source !== this.probeContent;
     debug.probeChanged = probeChanged;
     if (probeChanged) {
       this.probeContent = source;
       this.probeVersion++;
+      this.projectVersion++;
     }
 
     // No application-level cache — Volar pattern: the LS handles all caching
@@ -670,6 +665,7 @@ export class PropExtractionProject {
     if (source !== this.probeContentPkg) {
       this.probeContentPkg = source;
       this.probeVersionPkg++;
+      this.projectVersion++;
     }
 
     const program = this.ls.getProgram();
@@ -924,31 +920,40 @@ export class PropExtractionProject {
   /**
    * Notify that a file has changed on disk.
    *
-   * Volar pattern (createChecker.ts lines 409-431): Smart version bumping based on change type:
-   *
-   * - 'changed': only bump if the file is in the current program
-   * - 'created': flag shouldCheckRootFiles (new files may match tsconfig include)
-   * - 'deleted': bump if in program + flag shouldCheckRootFiles
+   * Delegates to onFilesChanged for single-file convenience.
    */
   onFileChanged(filePath: string, type: 'changed' | 'created' | 'deleted' = 'changed'): void {
-    if (type === 'created') {
-      // Volar: break immediately — once shouldCheckRootFiles is set,
-      // checkRootFilesUpdate() will re-parse the entire tsconfig anyway.
-      this.shouldCheckRootFiles = true;
-      return;
-    }
+    this.onFilesChanged([{ filePath, type }]);
+  }
 
+  /**
+   * Batch notify file changes on disk.
+   *
+   * Volar Checker pattern (createChecker.ts lines 409-432): Gets program ONCE before the loop,
+   * then selectively bumps version. Breaks after first created/deleted event — once
+   * shouldCheckRootFiles is set, subsequent changes are handled by the lazy re-parse.
+   *
+   * - Changed: only bump if file is in this project's program
+   * - Deleted: only bump if file was in program, flag for lazy re-parse, break
+   * - Created: flag for lazy re-parse only (no immediate version bump), break
+   */
+  onFilesChanged(changes: Array<{ filePath: string; type: 'changed' | 'created' | 'deleted' }>): void {
+    // Volar pattern: get program ONCE before the loop (createChecker.ts line 410-411)
     const program = this.ls.getProgram();
-
-    if (type === 'changed') {
-      // Volar: only bump if file is actually in the program
-      if (program?.getSourceFile(filePath)) {
-        this.projectVersion++;
-      }
-    } else if (type === 'deleted') {
-      if (program?.getSourceFile(filePath)) {
-        this.projectVersion++;
+    for (const { filePath, type } of changes) {
+      if (type === 'changed') {
+        if (program?.getSourceFile(filePath)) {
+          this.projectVersion++;
+        }
+      } else if (type === 'deleted') {
+        if (program?.getSourceFile(filePath)) {
+          this.projectVersion++;
+          this.shouldCheckRootFiles = true;
+          break;
+        }
+      } else if (type === 'created') {
         this.shouldCheckRootFiles = true;
+        break;
       }
     }
   }
@@ -957,20 +962,6 @@ export class PropExtractionProject {
     this.ls.dispose();
     // Note: sharedSnapshots is NOT cleared here — it's owned by the Manager
   }
-}
-
-/** Compare two arrays for set equality (Volar's arrayItemsEqual pattern). */
-function arrayItemsEqual(a: string[], b: string[]): boolean {
-  if (a.length !== b.length) {
-    return false;
-  }
-  const set = new Set(a);
-  for (const file of b) {
-    if (!set.has(file)) {
-      return false;
-    }
-  }
-  return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -1004,4 +995,20 @@ function getDeclarationName(typescript: typeof ts, node: ts.Statement): string |
     }
   }
   return undefined;
+}
+
+/**
+ * Volar Checker pattern (createChecker.ts lines 450-461): set-based array equality check.
+ */
+function arrayItemsEqual(a: string[], b: string[]): boolean {
+  if (a.length !== b.length) {
+    return false;
+  }
+  const set = new Set(a);
+  for (const file of b) {
+    if (!set.has(file)) {
+      return false;
+    }
+  }
+  return true;
 }

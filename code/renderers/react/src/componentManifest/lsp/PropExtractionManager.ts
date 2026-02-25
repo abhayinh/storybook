@@ -4,16 +4,18 @@
  * Follows Volar's typescriptProject.ts pattern:
  *
  * - ConfigProjects: Map<tsconfig, PropExtractionProject> — one LS per tsconfig, lazy
- * - FindTSConfig: walk up directories, then verify via direct include or project references
+ * - FindTSConfig: generic helper that iterates existing projects + follows reference chains
  * - Dispose + recreate on tsconfig change
  * - Inferred project fallback when no tsconfig is found (Volar's getOrCreateInferredProject)
  * - Shared fsFileSnapshots across all projects (Volar's module-level cache in createChecker.ts)
  * - Project reference chain resolution with cycle detection (Volar's getReferencesChains)
+ * - No parsedConfigCache — config data is always accessed through projects (Volar pattern)
  *
  * Manages the lifecycle of PropExtractionProject instances and handles tsconfig discovery for
  * monorepo support (different packages get different LS instances with their own compiler
  * options).
  */
+import { existsSync, type FSWatcher, watch } from 'fs';
 import * as path from 'path';
 import type ts from 'typescript';
 
@@ -32,11 +34,13 @@ const DEFAULT_INFERRED_OPTIONS: ts.CompilerOptions = {
 
 export class PropExtractionManager {
   private projects = new Map<string, PropExtractionProject>();
-  private inferredProjects = new Map<string, PropExtractionProject>();
-  private parsedConfigCache = new Map<string, ts.ParsedCommandLine | null>();
+  /** Volar pattern (typescriptProject.ts): one inferred project per workspace (= manager). */
+  private inferredProject: PropExtractionProject | undefined;
   /** Volar pattern (searchedDirs): avoid re-scanning directories for tsconfig files. */
   private searchedDirs = new Set<string>();
   private rootTsConfigs = new Set<string>();
+  /** Cleanup function for the active file watcher (if any). */
+  private stopWatching?: () => void;
 
   /**
    * Shared snapshot cache across all projects.
@@ -64,7 +68,8 @@ export class PropExtractionManager {
   getProjectForFile(filePath: string): PropExtractionProject {
     const configPath = this.findMatchingTSConfig(filePath);
     if (configPath) {
-      return this.getOrCreateConfiguredProject(configPath);
+      // Project is guaranteed to exist: findMatchingTSConfig creates it via getCommandLineForConfig
+      return this.projects.get(configPath) ?? this.getOrCreateInferredProject(filePath);
     }
     return this.getOrCreateInferredProject(filePath);
   }
@@ -75,57 +80,95 @@ export class PropExtractionManager {
    * Volar pattern (typescriptProject.ts lines 101-233):
    *
    * 1. Collect ALL tsconfigs walking up (not just nearest)
-   * 2. Sort by proximity (deepest path first, prefer containing directory)
-   * 3. Pass 1: findDirectIncludeTsconfig — check parsed fileNames (cheap)
-   * 4. Pass 2: findIndirectReferenceTsconfig — check via program.getSourceFile() (catches files that
-   *    are imported but not in include list)
+   * 2. Prepare closest root project (ensure at least one project exists for findTSConfig)
+   * 3. Pass 1: findDirectIncludeTsconfig — check fileNames via getCommandLineForConfig (creates projects)
+   * 4. Pass 2: findIndirectReferenceTsconfig — check via hasSourceFile on EXISTING projects only
    */
   private findMatchingTSConfig(filePath: string): string | null {
     // Volar pattern: collect ALL tsconfigs walking up, not just nearest.
-    // This handles cases where the nearest tsconfig doesn't include the file
-    // but a parent tsconfig does (e.g. monorepo root with project references).
-    const candidates = this.collectTSConfigs(filePath);
-    if (candidates.length === 0) {
+    this.collectTSConfigs(filePath);
+    if (this.rootTsConfigs.size === 0) {
       return null;
     }
 
-    // Volar's sortTSConfigs: deepest paths first (most specific),
-    // prefer configs whose directory contains the file.
-    candidates.sort((a, b) => sortTSConfigs(filePath, a, b));
-
     const normalizedFilePath = filePath.replace(/\\/g, '/');
 
-    // Pass 1: Direct include — check parsed fileNames (cheap, no program needed)
-    // Volar's findDirectIncludeTsconfig pattern
-    for (const candidate of candidates) {
-      const parsed = this.parseConfig(candidate);
-      if (!parsed) {
-        continue;
-      }
+    // Volar pattern (prepareClosestootCommandLine): eagerly create the project for
+    // the closest matching tsconfig BEFORE the passes. This ensures findTSConfig has
+    // at least one project to check (it only processes rootTsConfigs with existing
+    // projects). Volar: typescriptProject.ts lines 124-138.
+    const ancestorConfigs = [...this.rootTsConfigs]
+      .filter((config) =>
+        isFileInDir(normalizedFilePath, path.dirname(config).replace(/\\/g, '/'))
+      )
+      .sort((a, b) => sortTSConfigs(filePath, a, b));
 
-      const normalizedFileNames = new Set(parsed.fileNames.map((f) => f.replace(/\\/g, '/')));
-      if (normalizedFileNames.has(normalizedFilePath)) {
-        return candidate;
-      }
-
-      // Also check project reference chain (via fileNames)
-      const referencedConfig = this.findInProjectReferences(filePath, parsed, candidate, new Set());
-      if (referencedConfig) {
-        return referencedConfig;
-      }
+    if (ancestorConfigs.length > 0) {
+      this.getOrCreateConfiguredProject(ancestorConfigs[0]);
     }
 
-    // Pass 2: Indirect — check via program.getSourceFile()
-    // Volar's findIndirectReferenceTsconfig pattern: catches files that are
-    // transitively imported but not in the tsconfig's include list.
-    // Creates projects lazily (cached for reuse by subsequent files).
-    for (const candidate of candidates) {
-      if (!this.parseConfig(candidate)) {
+    // Pass 1: findDirectIncludeTsconfig — check parsed fileNames (creates projects via
+    // getCommandLineForConfig). Volar: typescriptProject.ts lines 149-158.
+    return (
+      this.findTSConfig(filePath, (tsconfig) => {
+        const commandLine = this.getCommandLineForConfig(tsconfig);
+        if (!commandLine) {
+          return false;
+        }
+        const fileNames = new Set(commandLine.fileNames);
+        return fileNames.has(normalizedFilePath);
+      }) ??
+      // Pass 2: findIndirectReferenceTsconfig — check via program.getSourceFile()
+      // on EXISTING projects only (never creates new ones).
+      // Volar: typescriptProject.ts lines 139-147.
+      this.findTSConfig(filePath, (tsconfig) => {
+        const project = this.projects.get(tsconfig);
+        return !!project && project.hasSourceFile(normalizedFilePath);
+      })
+    );
+  }
+
+  /**
+   * Generic tsconfig finder that iterates existing projects and follows reference chains.
+   *
+   * Volar pattern (typescriptProject.ts lines 160-188): Iterates ALL rootTsConfigs (sorted by
+   * proximity), but only processes ones with EXISTING projects. For each, follows the project
+   * reference chain via getReferencesChains, and calls the match callback for each tsconfig in
+   * the chain.
+   *
+   * The match callback determines what constitutes a "match":
+   * - Pass 1: creates project + checks fileNames (findDirectIncludeTsconfig)
+   * - Pass 2: checks existing project's program (findIndirectReferenceTsconfig)
+   */
+  private findTSConfig(
+    filePath: string,
+    match: (tsconfig: string) => boolean
+  ): string | null {
+    const checked = new Set<string>();
+    const sorted = [...this.rootTsConfigs].sort((a, b) => sortTSConfigs(filePath, a, b));
+
+    for (const rootTsConfig of sorted) {
+      // Volar pattern: only process rootTsConfigs with existing projects
+      const project = this.projects.get(rootTsConfig);
+      if (!project) {
         continue;
       }
-      const project = this.getOrCreateConfiguredProject(candidate);
-      if (project.hasSourceFile(normalizedFilePath)) {
-        return candidate;
+
+      let chains = this.getReferencesChains(project.getCommandLine(), rootTsConfig, []);
+      // Volar pattern: reverse chains for consistency with tsserver behavior
+      chains = chains.reverse();
+
+      for (const chain of chains) {
+        for (let i = chain.length - 1; i >= 0; i--) {
+          const tsconfig = chain[i];
+          if (checked.has(tsconfig)) {
+            continue;
+          }
+          checked.add(tsconfig);
+          if (match(tsconfig)) {
+            return tsconfig;
+          }
+        }
       }
     }
 
@@ -133,34 +176,30 @@ export class PropExtractionManager {
   }
 
   /**
-   * Recursively search project references for a file.
+   * Recursively resolve project reference chains with cycle detection.
    *
-   * Volar pattern (typescriptProject.ts lines 189-229): Follows the reference chain with cycle
-   * detection, checking each referenced tsconfig's fileNames for the target file.
+   * Volar pattern (typescriptProject.ts lines 189-229): Follows projectReferences, CREATING
+   * projects along the chain via getCommandLineForConfig. This is how Volar discovers all
+   * tsconfigs reachable through project references — each referenced tsconfig gets its own
+   * project, cached for future lookups.
+   *
+   * Returns an array of chains, where each chain is a path from root to leaf tsconfig.
    */
-  private findInProjectReferences(
-    filePath: string,
+  private getReferencesChains(
     commandLine: ts.ParsedCommandLine,
-    tsConfigPath: string,
-    visited: Set<string>
-  ): string | null {
+    tsConfig: string,
+    before: string[]
+  ): string[][] {
     if (!commandLine.projectReferences?.length) {
-      return null;
+      return [[...before, tsConfig]];
     }
-    if (visited.has(tsConfigPath)) {
-      return null;
-    } // Cycle detection
-    visited.add(tsConfigPath);
 
-    const normalizedFilePath = filePath.replace(/\\/g, '/');
-
+    const chains: string[][] = [];
     for (const ref of commandLine.projectReferences) {
       let refPath = ref.path.replace(/\\/g, '/');
 
       // Volar fix for #712: resolve directory references to tsconfig.json / jsconfig.json.
-      // Project references can point to a directory (e.g. "../core") instead
-      // of a file. Volar checks if the path is a directory and resolves to
-      // the config file inside it.
+      // Project references can point to a directory (e.g. "../core") instead of a file.
       if (this.typescript.sys.directoryExists(refPath)) {
         const tsconfigInDir = path.join(refPath, 'tsconfig.json');
         const jsconfigInDir = path.join(refPath, 'jsconfig.json');
@@ -171,43 +210,47 @@ export class PropExtractionManager {
         }
       }
 
-      if (!this.typescript.sys.fileExists(refPath)) {
-        continue;
-      }
-
-      const refParsed = this.parseConfig(refPath);
-      if (!refParsed) {
-        continue;
-      }
-
-      // Check direct include in referenced project
-      const refFileNames = new Set(refParsed.fileNames.map((f) => f.replace(/\\/g, '/')));
-      if (refFileNames.has(normalizedFilePath)) {
-        return refPath;
-      }
-
-      // Recurse into nested references
-      const nested = this.findInProjectReferences(filePath, refParsed, refPath, visited);
-      if (nested) {
-        return nested;
+      // Volar pattern: cycle detection via before array
+      const beforeIndex = before.indexOf(refPath);
+      if (beforeIndex >= 0) {
+        chains.push(before.slice(0, Math.max(beforeIndex, 1)));
+      } else {
+        // Creates a project for the referenced tsconfig (Volar's getCommandLine pattern)
+        const refCommandLine = this.getCommandLineForConfig(refPath);
+        if (refCommandLine) {
+          for (const chain of this.getReferencesChains(refCommandLine, refPath, [
+            ...before,
+            tsConfig,
+          ])) {
+            chains.push(chain);
+          }
+        }
       }
     }
 
-    return null;
+    return chains;
+  }
+
+  /**
+   * Get the command line for a tsconfig by creating or retrieving its project.
+   *
+   * Volar pattern (typescriptProject.ts lines 230-233): Config data is always accessed through
+   * projects — `getOrCreateConfiguredProject(tsConfig).getCommandLine()`. There is no separate
+   * parsedConfigCache; the project IS the cache.
+   */
+  private getCommandLineForConfig(tsconfig: string): ts.ParsedCommandLine | null {
+    const project = this.getOrCreateConfiguredProject(tsconfig);
+    return project?.getCommandLine() ?? null;
   }
 
   /**
    * Collect ALL tsconfig.json and jsconfig.json files walking up from the file's directory.
    *
-   * Volar pattern (typescriptProject.ts lines 101-133): Don't stop at the nearest config — collect
-   * all candidates so we can sort by proximity and try each one. This handles monorepos where the
-   * nearest tsconfig may not include the file but a parent tsconfig (with project references)
-   * does.
-   *
-   * Uses searchedDirs / rootTsConfigs caches (Volar pattern) to avoid re-scanning directories that
+   * Volar pattern (typescriptProject.ts lines 101-118): Walk up directories, populating
+   * rootTsConfigs and searchedDirs. Uses searchedDirs to avoid re-scanning directories that
    * have already been checked.
    */
-  private collectTSConfigs(filePath: string): string[] {
+  private collectTSConfigs(filePath: string): void {
     let dir = path.dirname(filePath);
     while (true) {
       if (this.searchedDirs.has(dir)) {
@@ -226,90 +269,63 @@ export class PropExtractionManager {
       }
       dir = parent;
     }
-    // Return configs that are ancestors of the file
-    return [...this.rootTsConfigs].filter((config) => {
-      const configDir = path.dirname(config).replace(/\\/g, '/');
-      return filePath.replace(/\\/g, '/').startsWith(configDir + '/');
-    });
   }
 
   /**
-   * Parse a tsconfig file with standard TS APIs (cached).
-   *
-   * Volar pattern (typescriptProject.ts lines 230-233): Volar caches configs implicitly by creating
-   * projects eagerly. We cache the ParsedCommandLine directly to avoid re-parsing during project
-   * reference chain traversal.
-   *
-   * Applies Volar's patches:
-   *
-   * - OutDir = undefined (Volar fix for TypeScript#30457 / Volar#1786)
-   * - Path normalization to forward slashes
+   * Volar pattern (typescriptProjectLs.ts parseConfigWorker lines 262-353):
+   * Shared config parsing with outDir patch and path normalization.
    */
-  private parseConfig(configPath: string): ts.ParsedCommandLine | null {
-    if (this.parsedConfigCache.has(configPath)) {
-      return this.parsedConfigCache.get(configPath)!;
+  private parseCommandLine(configPath: string): ts.ParsedCommandLine {
+    const config = this.typescript.readJsonConfigFile(configPath, this.typescript.sys.readFile);
+    const parsed = this.typescript.parseJsonSourceFileConfigFileContent(
+      config,
+      this.typescript.sys,
+      path.dirname(configPath),
+      {},
+      configPath
+    );
+    // https://github.com/microsoft/TypeScript/issues/30457
+    // https://github.com/johnsoncodehk/volar/issues/1786
+    parsed.options.outDir = undefined;
+    parsed.fileNames = parsed.fileNames.map((f) => f.replace(/\\/g, '/'));
+    return parsed;
+  }
+
+  /**
+   * Volar pattern (typescriptProject.ts lines 236-256): Creates project with injected
+   * getCommandLine callback for lazy re-parsing (Checker pattern).
+   */
+  private getOrCreateConfiguredProject(configPath: string): PropExtractionProject | null {
+    const existing = this.projects.get(configPath);
+    if (existing) {
+      return existing;
     }
 
     try {
-      const config = this.typescript.readJsonConfigFile(configPath, this.typescript.sys.readFile);
-      const parsed = this.typescript.parseJsonSourceFileConfigFileContent(
-        config,
-        this.typescript.sys,
-        path.dirname(configPath),
-        {},
-        configPath
+      const reloadCommandLine = () => this.parseCommandLine(configPath);
+      const project = new PropExtractionProject(
+        this.typescript,
+        reloadCommandLine(),
+        configPath,
+        this.sharedSnapshots,
+        reloadCommandLine
       );
-
-      // Volar patch (typescriptProjectLs.ts line 350):
-      // Prevents TS LanguageService issues with outDir + rootDir + composite/incremental.
-      // See: https://github.com/microsoft/TypeScript/issues/30457
-      //      https://github.com/johnsoncodehk/volar/issues/1786
-      parsed.options.outDir = undefined;
-
-      // Volar pattern (typescriptProjectLs.ts line 351):
-      // Normalize all file names to forward slashes for consistency.
-      parsed.fileNames = parsed.fileNames.map((f) => f.replace(/\\/g, '/'));
-
-      this.parsedConfigCache.set(configPath, parsed);
-      return parsed;
+      this.projects.set(configPath, project);
+      return project;
     } catch {
-      this.parsedConfigCache.set(configPath, null);
       return null;
     }
   }
 
-  /** Get or create a configured project (backed by a tsconfig). */
-  private getOrCreateConfiguredProject(configPath: string): PropExtractionProject {
-    let project = this.projects.get(configPath);
-    if (!project) {
-      const parsed = this.parseConfig(configPath);
-      if (!parsed) {
-        // Fall back to inferred project keyed by the config's directory (not the config
-        // path itself). Volar pattern: inferred projects are always keyed by directory.
-        return this.getOrCreateInferredProject(path.dirname(configPath));
-      }
-      project = new PropExtractionProject(
-        this.typescript,
-        parsed,
-        configPath,
-        this.sharedSnapshots
-      );
-      this.projects.set(configPath, project);
-    }
-    return project;
-  }
-
   /**
-   * Get or create an inferred project (no tsconfig found).
+   * Get or create the inferred project (no tsconfig found).
    *
-   * Volar pattern (typescriptProject.ts lines 258-284): Creates a project with default compiler
-   * options, keyed by the workspace directory. Dynamically adds files via tryAddFile.
+   * Volar pattern (typescriptProject.ts lines 258-284): ONE inferred project per workspace.
+   * All files without a tsconfig share the same compilation context so cross-file imports resolve
+   * correctly. Dynamically adds files via tryAddFile.
    */
   private getOrCreateInferredProject(filePath: string): PropExtractionProject {
-    const dir = path.dirname(filePath);
-
-    let project = this.inferredProjects.get(dir);
-    if (!project) {
+    if (!this.inferredProject) {
       const parsed: ts.ParsedCommandLine = {
         options: {
           ...DEFAULT_INFERRED_OPTIONS,
@@ -324,100 +340,211 @@ export class PropExtractionManager {
         errors: [],
       };
 
-      project = new PropExtractionProject(
+      this.inferredProject = new PropExtractionProject(
         this.typescript,
         parsed,
         undefined, // No config path for inferred projects
         this.sharedSnapshots
       );
-      this.inferredProjects.set(dir, project);
     }
 
     // Volar pattern (typescriptProjectLs.ts line 196-200):
     // Dynamically add the file if not already included.
-    project.tryAddFile(filePath);
+    this.inferredProject.tryAddFile(filePath);
 
-    return project;
+    return this.inferredProject;
   }
 
   /**
-   * Bump projectVersion on all projects for a new extraction cycle.
+   * Invalidate all projects for a new extraction cycle.
    *
-   * Equivalent of Volar's file watcher → projectVersion++. Each project bumps its version so the
-   * next extractDocsBulk call will re-check getScriptVersion for all files, detect mtime changes,
-   * and incrementally recompile only what changed.
+   * Each project bumps projectVersion + sets shouldCheckRootFiles. On next extraction:
+   * 1. getProjectVersion() → checkRootFilesUpdate() → lazy re-parse tsconfig fileNames
+   * 2. LS re-syncs → getScriptVersion (mtime) for each file → only recompiles what changed
    */
   invalidate(): void {
     for (const project of this.projects.values()) {
       project.invalidate();
     }
-    for (const project of this.inferredProjects.values()) {
-      project.invalidate();
-    }
+    this.inferredProject?.invalidate();
   }
 
   /**
-   * Volar pattern: no snapshot cache clearing on file changes. The mtime-based cache in
-   * getScriptSnapshot handles it: next access checks getModifiedTime() → mtime differs → re-reads
-   * from disk.
+   * Broadcast file change to all projects. Each project selectively bumps projectVersion
+   * only if the file is in its program (Volar Checker pattern).
    */
   onFileChanged(filePath: string) {
-    for (const project of this.projects.values()) {
-      project.onFileChanged(filePath, 'changed');
-    }
-    for (const project of this.inferredProjects.values()) {
-      project.onFileChanged(filePath, 'changed');
-    }
+    this.onFilesChanged([{ filePath, type: 'changed' }]);
   }
 
   /**
-   * Notify that a file has been created.
-   *
-   * Volar pattern: file creation may change which files are in the program. Flags projects to
-   * re-check their root files.
+   * Broadcast file creation to all projects. Each project sets shouldCheckRootFiles
+   * for lazy config re-parse (Volar Checker pattern — no immediate version bump).
    */
   onFileCreated(filePath: string) {
-    for (const project of this.projects.values()) {
-      project.onFileChanged(filePath, 'created');
-    }
+    this.onFilesChanged([{ filePath, type: 'created' }]);
   }
 
   /**
-   * Notify that a file has been deleted.
-   *
-   * Volar pattern: file deletion removes from program + triggers root file re-check.
+   * Broadcast file deletion to all projects. Each project only bumps if the file was in
+   * its program, then sets shouldCheckRootFiles (Volar Checker pattern).
    */
   onFileDeleted(filePath: string) {
-    for (const project of this.projects.values()) {
-      project.onFileChanged(filePath, 'deleted');
-    }
+    this.onFilesChanged([{ filePath, type: 'deleted' }]);
   }
 
   /**
-   * Notify that a tsconfig has changed. Disposes and removes the affected project (Volar pattern:
-   * dispose + recreate). Clears tsconfig cache since file→tsconfig mapping may have changed.
+   * Batch broadcast file changes to all projects.
+   *
+   * Volar Checker pattern (createChecker.ts lines 409-432): Each project processes the full
+   * batch with a single getProgram() call, then breaks after the first created/deleted event.
+   * More efficient than per-file dispatch when multiple files change simultaneously.
    */
-  onConfigChanged(configPath: string) {
+  onFilesChanged(changes: Array<{ filePath: string; type: 'changed' | 'created' | 'deleted' }>) {
+    for (const project of this.projects.values()) {
+      project.onFilesChanged(changes);
+    }
+    this.inferredProject?.onFilesChanged(changes);
+  }
+
+  /**
+   * Notify that a tsconfig has changed.
+   *
+   * Volar pattern (typescriptProject.ts lines 43-68): Selective handling per change type:
+   * - Created: add to rootTsConfigs (will be discovered on next findMatchingTSConfig)
+   * - Changed: dispose project (re-created on next access with fresh config)
+   * - Deleted: remove from rootTsConfigs + dispose project
+   *
+   * No clearing of searchedDirs or rootTsConfigs needed (Volar pattern): the file watcher events
+   * maintain rootTsConfigs incrementally. The project disposal ensures stale config data is never
+   * served — getOrCreateConfiguredProject will re-parse from disk on next access.
+   */
+  onConfigChanged(configPath: string, type: 'created' | 'changed' | 'deleted' = 'changed') {
+    if (type === 'created') {
+      this.rootTsConfigs.add(configPath);
+    } else if (type === 'deleted') {
+      this.rootTsConfigs.delete(configPath);
+    }
+
+    // Dispose + remove the affected project (Volar pattern: re-created on next access)
     const project = this.projects.get(configPath);
     if (project) {
       project.dispose();
       this.projects.delete(configPath);
     }
-    this.parsedConfigCache.clear();
-    this.searchedDirs.clear();
-    this.rootTsConfigs.clear();
+  }
+
+  /**
+   * Start watching directories for file changes.
+   *
+   * VS Code pattern: the IDE watches the filesystem and forwards events to the language service.
+   * This is the headless equivalent — we ARE the file watcher, forwarding events to our projects
+   * via the existing onFileChanged/Created/Deleted/ConfigChanged methods.
+   *
+   * Uses Node.js fs.watch with recursive mode (supported on macOS, Windows, and Linux with
+   * Node.js 19+). No external dependencies needed.
+   *
+   * When watching is active, invalidate() is no longer needed — individual file events keep
+   * projects in sync incrementally, exactly like Volar in VS Code.
+   */
+  startWatching(directories: string[]): void {
+    // Stop any existing watcher
+    this.stopWatching?.();
+
+    const watchers: FSWatcher[] = [];
+    const pending = new Map<string, ReturnType<typeof setTimeout>>();
+
+    for (const dir of directories) {
+      try {
+        const watcher = watch(dir, { recursive: true }, (eventType, filename) => {
+          if (!filename) {
+            return;
+          }
+          const filePath = path.resolve(dir, filename).replace(/\\/g, '/');
+
+          // Skip irrelevant paths
+          if (filePath.includes('node_modules') || filePath.includes('.git')) {
+            return;
+          }
+
+          // Debounce per file: fs.watch can fire multiple events for the same change.
+          // 50ms window — fast enough for responsiveness, long enough to coalesce duplicates.
+          const existing = pending.get(filePath);
+          if (existing) {
+            clearTimeout(existing);
+          }
+
+          pending.set(
+            filePath,
+            setTimeout(() => {
+              pending.delete(filePath);
+
+              if (eventType === 'rename') {
+                // 'rename' fires for both creation and deletion — check existence to distinguish
+                if (existsSync(filePath)) {
+                  this.handleFileEvent(filePath, 'created');
+                } else {
+                  this.handleFileEvent(filePath, 'deleted');
+                }
+              } else {
+                // 'change' = content modified
+                this.handleFileEvent(filePath, 'changed');
+              }
+            }, 50)
+          );
+        });
+        watchers.push(watcher);
+      } catch {
+        // Directory might not exist or recursive watching not supported
+      }
+    }
+
+    this.stopWatching = () => {
+      for (const timeout of pending.values()) {
+        clearTimeout(timeout);
+      }
+      pending.clear();
+      for (const watcher of watchers) {
+        watcher.close();
+      }
+      watchers.length = 0;
+    };
+  }
+
+  /**
+   * Route a file event to the appropriate handler.
+   *
+   * Tsconfig changes go to onConfigChanged (project lifecycle management).
+   * Source file changes go to onFileChanged/Created/Deleted (project version bumps).
+   */
+  private handleFileEvent(filePath: string, type: 'created' | 'changed' | 'deleted') {
+    const basename = path.basename(filePath);
+    if (basename === 'tsconfig.json' || basename === 'jsconfig.json') {
+      this.onConfigChanged(filePath, type);
+      return;
+    }
+
+    switch (type) {
+      case 'created':
+        this.onFileCreated(filePath);
+        break;
+      case 'changed':
+        this.onFileChanged(filePath);
+        break;
+      case 'deleted':
+        this.onFileDeleted(filePath);
+        break;
+    }
   }
 
   dispose() {
+    this.stopWatching?.();
     for (const project of this.projects.values()) {
       project.dispose();
     }
-    for (const project of this.inferredProjects.values()) {
-      project.dispose();
-    }
+    this.inferredProject?.dispose();
     this.projects.clear();
-    this.inferredProjects.clear();
-    this.parsedConfigCache.clear();
+    this.inferredProject = undefined;
     this.sharedSnapshots.clear();
     this.searchedDirs.clear();
     this.rootTsConfigs.clear();
@@ -438,8 +565,8 @@ function sortTSConfigs(filePath: string, a: string, b: string): number {
   const dirB = path.dirname(b).replace(/\\/g, '/');
   const normalizedFile = filePath.replace(/\\/g, '/');
 
-  const inA = normalizedFile.startsWith(dirA + '/');
-  const inB = normalizedFile.startsWith(dirB + '/');
+  const inA = isFileInDir(normalizedFile, dirA);
+  const inB = isFileInDir(normalizedFile, dirB);
 
   if (inA !== inB) {
     return (inB ? 1 : 0) - (inA ? 1 : 0);
@@ -455,4 +582,13 @@ function sortTSConfigs(filePath: string, a: string, b: string): number {
   }
 
   return bLength - aLength;
+}
+
+/**
+ * Check if a file is inside a directory (Volar's isFileInDir pattern).
+ * Uses path.relative to handle edge cases with different separators.
+ */
+function isFileInDir(filePath: string, dir: string): boolean {
+  const relative = path.relative(dir, filePath);
+  return !!relative && !relative.startsWith('..') && !path.isAbsolute(relative);
 }
